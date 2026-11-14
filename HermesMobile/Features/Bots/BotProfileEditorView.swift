@@ -266,23 +266,8 @@ import SwiftUI
     }
 
     private func capabilityPicker(_ field: BotProfileEditor.Field) -> some View {
-        NavigationStack {
-            AppList {
-                ForEach(capabilities(field)) { item in
-                    Toggle(isOn: Binding(get: { capability(field, id: item.id)?.enabled == true },
-                                         set: { editor.setEnabled($0, field: field, id: item.id) })) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.name)
-                            if let detail = item.detail, !detail.isEmpty { Text(detail).font(AppFont.caption()).foregroundStyle(.appSecondary) }
-                        }
-                    }
-                }
-            }
-            .themedPageBackground()
-            .navigationTitle(field.title).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { capabilitySheet = nil } } }
-        }
-        .adaptiveFormPresentation()
+        BotCapabilityPicker(title: field.title, items: capabilities(field),
+                            setEnabled: { editor.setEnabled($0, field: field, id: $1) }) { capabilitySheet = nil }
     }
 
     private var modelPicker: some View {
@@ -344,9 +329,6 @@ import SwiftUI
         }
     }
 
-    private func capability(_ field: BotProfileEditor.Field, id: String) -> BotProfileCapability? {
-        capabilities(field).first { $0.id == id }
-    }
 
     private func resultIcon(_ outcome: BotProfileEditor.Outcome) -> String {
         switch outcome { case .saved: return "checkmark.circle.fill"; case .conflict: return "arrow.clockwise.circle"; case .confirmationRequired: return "questionmark.circle"; case .failed: return "exclamationmark.circle" }
@@ -372,5 +354,33 @@ import SwiftUI
                 try editor.selectAvatar(data)
             } catch { imageError = error.localizedDescription }
         }
+    }
+}
+
+/// One list of a bot's skills, toolsets or MCP servers as on/off rows, for the editor
+/// and the duplicate sheet. It only reports taps: the owner holds the rows.
+struct BotCapabilityPicker: View {
+    let title: String
+    let items: [BotProfileCapability]
+    let setEnabled: (Bool, String) -> Void
+    let done: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            AppList {
+                ForEach(items) { item in
+                    Toggle(isOn: Binding(get: { item.enabled }, set: { setEnabled($0, item.id) })) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.name)
+                            if let detail = item.detail, !detail.isEmpty { Text(detail).font(AppFont.caption()).foregroundStyle(.appSecondary) }
+                        }
+                    }
+                }
+            }
+            .themedPageBackground()
+            .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: done) } }
+        }
+        .adaptiveFormPresentation()
     }
 }

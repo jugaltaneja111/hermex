@@ -1623,6 +1623,15 @@ so a retry never mints a second Profile or chat. A look failure is reported
 and the chat step still runs; the Edit screen fixes the look later. Leaving
 the sheet mid-write marks pending steps uncertain; nothing retries on its own.
 
+A duplicate's sheet reads the source's `profiles.describe` and lists its skills
+and MCP servers as on/off rows. The host has no selective clone, so `clone_from`
+still copies everything; when a row was changed, one more `profiles.configure`
+follows `profiles.create` with `disabled_skills` and/or `enabled_mcp_servers`
+(only the list that changed, each sent whole, so a retry repeats it safely). A
+skill turned off there is disabled in the copy, not absent from its folder. A
+failed read shows no rows and copies everything; a failed write is reported
+like the look and fixed in the Edit screen.
+
 Credential inheritance is one explicit switch, on by default: on sends
 `share_auth: true` so the bot reads the host's `auth.json` in place (one token
 pool, no forked refresh), off sends `mirror_credentials: false` so the bot

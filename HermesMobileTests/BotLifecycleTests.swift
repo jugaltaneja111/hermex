@@ -146,6 +146,56 @@ import XCTest
         XCTAssertEqual(creator.phase, .created)
     }
 
+    func testDuplicateTurnsOffOnlyWhatTheSheetTurnedOff() async throws {
+        let source = try XCTUnwrap(BotProfile(row("triage")))
+        let (creator, wire) = try makeCreator(roster: [row("triage")], source: source)
+        wire.describe = sourceDetails
+        await creator.load()
+        XCTAssertEqual(creator.draft.skills.map(\.id), ["mail", "calendar", "old"])
+        creator.setEnabled(false, .skills, id: "calendar")
+        creator.setEnabled(false, .mcpServers, id: "github")
+
+        await creator.create()
+
+        XCTAssertEqual(wire.calls.map(\.0), ["model.options", "profiles.describe", "profiles.create", "profiles.configure",
+                                             "profiles.configure", "session.list", "session.create", "session.title"])
+        let changes = wire.calls[3].1
+        XCTAssertEqual(changes["name"], .string("triage-copy"), "the copy is changed, never the source")
+        XCTAssertEqual(changes["disabled_skills"], .array([.string("calendar"), .string("old")]), "what the source had off stays off")
+        XCTAssertEqual(changes["enabled_mcp_servers"], .array([.string("linear")]))
+        XCTAssertEqual(creator.phase, .created); XCTAssertFalse(creator.needsAttention)
+    }
+
+    func testUntouchedDuplicateWritesNoCapabilities() async throws {
+        let source = try XCTUnwrap(BotProfile(row("triage")))
+        let (creator, wire) = try makeCreator(roster: [row("triage")], source: source)
+        wire.describe = sourceDetails
+        await creator.load()
+        creator.setEnabled(false, .skills, id: "mail"); creator.setEnabled(true, .skills, id: "mail")
+
+        await creator.create()
+
+        XCTAssertEqual(wire.calls.map(\.0).filter { $0 == "profiles.configure" }.count, 1, "only the look")
+        XCTAssertNil(creator.outcomes[.capabilities])
+    }
+
+    func testRefusedCapabilitiesAreReportedAndTheChatIsStillMade() async throws {
+        let source = try XCTUnwrap(BotProfile(row("triage")))
+        let (creator, wire) = try makeCreator(roster: [row("triage")], source: source)
+        wire.describe = sourceDetails
+        await creator.load()
+        creator.setEnabled(false, .mcpServers, id: "github")
+        let applied: BotJSON = .object(["ui_meta": .bool(true), "ui_meta_revisions": .object(["hermes-bots": .number(1)])])
+        wire.configure = { _ in .object(["ok": .bool(true), "applied": applied]) }
+
+        await creator.create()
+
+        XCTAssertEqual(creator.phase, .created, "the bot and its chat still exist")
+        XCTAssertTrue(creator.needsAttention)
+        guard case .failed = creator.outcomes[.capabilities] else { return XCTFail("the unsaved choice is reported") }
+        XCTAssertEqual(creator.outcomes[.chat], .done)
+    }
+
     func testHostRefusingTheNameStopsBeforeLookAndChat() async throws {
         let (creator, wire) = try makeCreator(roster: [])
         wire.create = { _ in throw BotFailure.rejected(4062) }
@@ -446,6 +496,16 @@ import XCTest
                         makeWire: { _ in queue.removeFirst() }, purgeLocalState: purge)
     }
 
+    /// A source bot's `profiles.describe`: three skills, one already off, and two MCP servers.
+    private var sourceDetails: BotJSON {
+        .object(["name": .string("triage"),
+                 "skills": .array([.object(["name": .string("mail"), "enabled": .bool(true)]),
+                                   .object(["name": .string("calendar"), "enabled": .bool(true)]),
+                                   .object(["name": .string("old"), "enabled": .bool(false)])]),
+                 "mcp_servers": .array([.object(["name": .string("github"), "transport": .string("http"), "enabled": .bool(true)]),
+                                        .object(["name": .string("linear"), "transport": .string("http"), "enabled": .bool(true)])])])
+    }
+
     private func row(_ name: String, look: [String: BotJSON]? = nil, description: String = "") -> BotJSON {
         var fields: [String: BotJSON] = [
             "name": .string(name), "display_name": .string(""), "description": .string(description), "has_avatar": .bool(false),
@@ -466,6 +526,8 @@ import XCTest
     var roster: [BotJSON]
     var sessions: [BotJSON] = []
     var create: (([String: BotJSON]) throws -> BotJSON)?
+    /// The source's `profiles.describe` reply; the read fails when nil.
+    var describe: BotJSON?
     var configure: (([String: BotJSON]) throws -> BotJSON)?
     var sessionCreate: (([String: BotJSON]) throws -> BotJSON)?
     var title: (([String: BotJSON]) throws -> BotJSON)?
@@ -490,6 +552,9 @@ import XCTest
         switch method {
         case "model.options": return .object(["providers": .array([])])
         case "profiles.list": return .object(["profiles": .array(roster)])
+        case "profiles.describe":
+            guard let describe else { throw BotFailure.unsupported }
+            return describe
         case "profiles.create":
             if holdsCreate { await withCheckedContinuation { held.append($0) } }
             try validateDispatch?()
@@ -498,7 +563,8 @@ import XCTest
                             "mirrored": .object(["auth": .string("shared")])])
         case "profiles.configure":
             if let configure { return try configure(params) }
-            return .object(["ok": .bool(true), "applied": .object(["ui_meta": .bool(true), "ui_meta_revisions": .object(["hermes-bots": .number(1)])])])
+            return .object(["ok": .bool(true), "applied": .object(["ui_meta": .bool(true), "skills": .bool(true), "mcp_servers": .bool(true),
+                                                            "ui_meta_revisions": .object(["hermes-bots": .number(1)])])])
         case "session.list": return .object(["sessions": .array(sessions)])
         case "session.create":
             if let sessionCreate { return try sessionCreate(params) }

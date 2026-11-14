@@ -2,13 +2,15 @@ import SwiftUI
 
 /// The create and duplicate sheet: a live face, the name, an optional role, the
 /// drawn look, the model and the credential choice, plus instructions and the
-/// bundled-skills choice for a new bot, then one Create button.
+/// bundled-skills choice for a new bot or which skills and MCP servers stay on
+/// for a duplicate, then one Create button.
 /// After a partial create the same sheet shows each step's outcome and Try Again.
 @MainActor struct BotCreateView: View {
     @State private var creator: BotCreator
     @State private var showsModels = false
     @State private var showsExpressions = false
     @State private var showsDescribe = false
+    @State private var capabilitySheet: BotCreator.Capability?
     /// What the face should do about the last edit: a hop for a shape, a wobble
     /// for a color, a glance down while the name is typed.
     @State private var cue: BotFaceCue?
@@ -72,6 +74,7 @@ import SwiftUI
 
                     // A duplicate copies the source's instructions and skills, so these are new-bot only.
                     if !creator.isDuplicate { startingPoint.disabled(creator.hasStarted) }
+                    else if !creator.draft.skills.isEmpty || !creator.draft.mcpServers.isEmpty { copiedCapabilities.disabled(creator.hasStarted) }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
@@ -105,6 +108,10 @@ import SwiftUI
                 }
             }
             .navigationDestination(isPresented: $showsExpressions) { expressionPicker }
+            .sheet(item: $capabilitySheet) { capability in
+                BotCapabilityPicker(title: capability.title, items: items(capability),
+                                    setEnabled: { creator.setEnabled($0, capability, id: $1) }) { capabilitySheet = nil }
+            }
             .sheet(isPresented: $showsDescribe) {
                 BotAvatarDescribeSheet(send: { [creator] prompt in try await creator.sendAvatarPrompt(prompt) }) { generated in
                     creator.setGenerated(generated); cue = BotFaceCue(.hop)
@@ -154,6 +161,31 @@ import SwiftUI
                 : "The bot starts with every skill that ships with Hermes.")
     }
 
+    /// A duplicate's choice of which of the source's skills and MCP servers stay on.
+    @ViewBuilder private var copiedCapabilities: some View {
+        sectionLabel("Capabilities")
+        card {
+            if !creator.draft.skills.isEmpty { capabilityRow(.skills, systemImage: "sparkles") }
+            if !creator.draft.mcpServers.isEmpty { capabilityRow(.mcpServers, systemImage: "server.rack") }
+        }
+        caption("Everything is copied. What you turn off here stays off in the new bot.")
+    }
+
+    private func items(_ capability: BotCreator.Capability) -> [BotProfileCapability] {
+        switch capability {
+        case .skills: return creator.draft.skills
+        case .mcpServers: return creator.draft.mcpServers
+        }
+    }
+
+    private func capabilityRow(_ capability: BotCreator.Capability, systemImage: String) -> some View {
+        let enabled = items(capability).filter(\.enabled)
+        return navigationRow(capability.title, subtitle: enabled.map(\.name).prefix(3).joined(separator: ", "),
+                             value: "\(enabled.count)/\(items(capability).count)", systemImage: systemImage) {
+            capabilitySheet = capability
+        }
+    }
+
     /// Footnote under a card, leading-aligned however short it is.
     private func caption(_ text: LocalizedStringKey) -> some View {
         Text(text).font(AppFont.caption2()).foregroundStyle(.appTertiary)
@@ -191,7 +223,7 @@ import SwiftUI
     private var results: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(creator.phase == .created ? (creator.needsAttention ? "Created, with a note" : "Created") : "Needs Attention").font(AppFont.headline())
-            ForEach(BotCreator.Step.allCases.filter { creator.outcomes[$0] != nil }) { step in
+            ForEach(creator.steps.filter { creator.outcomes[$0] != nil }) { step in
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: icon(creator.outcomes[step]!)).foregroundStyle(color(creator.outcomes[step]!)).frame(width: 20)
                     VStack(alignment: .leading, spacing: 3) {

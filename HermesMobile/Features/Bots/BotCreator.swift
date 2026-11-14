@@ -30,17 +30,21 @@ enum BotProfileName {
 
 /// One bot creation or duplication for one connection. Setup is three host writes
 /// in order: the Profile (`profiles.create`), its look (`profiles.configure`) and
-/// its canonical "Bot Chat" (`session.create` + `session.title`). Each step records
+/// its canonical "Bot Chat" (`session.create` + `session.title`). A duplicate whose
+/// skills or MCP servers were changed in the sheet adds one more `profiles.configure`
+/// after the Profile: the host copies everything, so that write turns the rest off.
+/// Each step records
 /// its own outcome; Try Again repeats only the steps that are not done, and a
 /// step whose reply was lost re-reads the host before writing again, so a retry
 /// never mints a second Profile or a second chat.
 @MainActor @Observable final class BotCreator {
     enum Step: CaseIterable, Identifiable {
-        case profile, look, chat
+        case profile, capabilities, look, chat
         var id: Self { self }
         var title: String {
             switch self {
             case .profile: return String(localized: "Profile")
+            case .capabilities: return String(localized: "Capabilities")
             case .look: return String(localized: "Look")
             case .chat: return String(localized: "Bot Chat")
             }
@@ -48,6 +52,17 @@ enum BotProfileName {
     }
     enum Outcome: Equatable { case done, failed(String), uncertain }
     enum Phase: Equatable { case editing, creating, created }
+    /// The source bot's lists a duplicate can switch rows of.
+    enum Capability: String, Identifiable {
+        case skills, mcpServers
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .skills: return String(localized: "Skills")
+            case .mcpServers: return String(localized: "MCP servers")
+            }
+        }
+    }
 
     struct Draft: Equatable {
         var title = ""
@@ -64,6 +79,10 @@ enum BotProfileName {
         /// New bots only: `no_skills`, so the host seeds only its essential skills.
         /// The host refuses it with `clone_from`, since a copy brings the source's skills.
         var skipsBundledSkills = false
+        /// Duplicates only: the source's skills and MCP servers as the copy should have
+        /// them. Empty until `load()` has read the source, and for a new bot.
+        var skills: [BotProfileCapability] = []
+        var mcpServers: [BotProfileCapability] = []
     }
 
     let server: URL
@@ -80,6 +99,9 @@ enum BotProfileName {
     /// ended up without a model, so the user knows to finish setup.
     private(set) var note: String?
 
+    /// The source's lists as `load()` read them, which is what a clone starts with.
+    private var sourceSkills: [BotProfileCapability] = []
+    private var sourceMCPServers: [BotProfileCapability] = []
     private var taken: Set<String>
     private var wire: (any BotTransport)?
     private var generation = 0
@@ -128,6 +150,11 @@ enum BotProfileName {
         phase == .editing && !isLoading && BotProfileName.isValid(name) && (hasStarted || !nameIsTaken)
     }
     var isDuplicate: Bool { source != nil }
+    /// The steps this create runs: the capabilities write only when the sheet changed a row.
+    var steps: [Step] {
+        let changed = draft.skills != sourceSkills || draft.mcpServers != sourceMCPServers
+        return Step.allCases.filter { $0 != .capabilities || changed }
+    }
     /// True after a create that finished with something left to do: a look that
     /// did not save or a bot with no model. The sheet stays up to say so.
     var needsAttention: Bool { note != nil || outcomes.values.contains { $0 != .done } }
@@ -138,6 +165,14 @@ enum BotProfileName {
     func setSharesCredentials(_ value: Bool) { draft.sharesCredentials = value }
     func setInstructions(_ value: String) { draft.instructions = value }
     func setSkipsBundledSkills(_ value: Bool) { draft.skipsBundledSkills = value }
+    func setEnabled(_ enabled: Bool, _ capability: Capability, id: String) {
+        switch capability {
+        case .skills:
+            if let index = draft.skills.firstIndex(where: { $0.id == id }) { draft.skills[index].enabled = enabled }
+        case .mcpServers:
+            if let index = draft.mcpServers.firstIndex(where: { $0.id == id }) { draft.mcpServers[index].enabled = enabled }
+        }
+    }
     func setShape(_ shape: BotAvatarShape) {
         draft.appearance.shape = shape.rawValue; draft.appearance.custom = true; draft.appearance.imageKind = "shape"
         draft.appearance.generated = nil
@@ -161,8 +196,9 @@ enum BotProfileName {
         draft.appearance.expression = expression == .neutral ? nil : expression.rawValue
     }
 
-    /// Opens the socket and reads the model inventory. A failure here leaves the
-    /// picker empty; the create itself reconnects if needed.
+    /// Opens the socket and reads the model inventory and, for a duplicate, the source's
+    /// skills and MCP servers. A failure here leaves that picker empty, and a duplicate
+    /// then copies everything; the create itself reconnects if needed.
     func load() async {
         generation += 1
         let owner = generation
@@ -180,6 +216,14 @@ enum BotProfileName {
                 try ensureOwner(owner, client)
                 modelGroups = HermesModelCatalog(options).groups
             }
+            // Read once: a later load must not undo what the sheet already switched.
+            if let source, sourceSkills.isEmpty, sourceMCPServers.isEmpty, !hasStarted,
+               let payload = try? await client.call(.profilesDescribe(name: source.id), validateDispatch: validate(owner)) {
+                try ensureOwner(owner, client)
+                let details = BotProfileDetails(payload, expectedName: source.id)
+                sourceSkills = details.skills; sourceMCPServers = details.mcpServers
+                draft.skills = details.skills; draft.mcpServers = details.mcpServers
+            }
         } catch {
             guard generation == owner, wire === client else { return }
             client.close(); wire = nil
@@ -192,7 +236,7 @@ enum BotProfileName {
         isLoading = false
         if phase == .creating {
             phase = .editing
-            for step in Step.allCases where outcomes[step] == nil { outcomes[step] = .uncertain }
+            for step in steps where outcomes[step] == nil { outcomes[step] = .uncertain }
         }
     }
 
@@ -214,6 +258,7 @@ enum BotProfileName {
                 try ensureOwner(owner, client)
             }
             try await createProfile(client, owner: owner)
+            await configureCapabilities(client, owner: owner)
             await configureLook(client, owner: owner)
             try await ensureChat(client, owner: owner)
             guard generation == owner else { return }
@@ -223,7 +268,7 @@ enum BotProfileName {
             // A disconnect clears `wire` before the suspended call throws, so only the
             // generation decides whether this attempt still owns the sheet.
             guard generation == owner else { return }
-            if !(error is BotCreatorStop), let step = Step.allCases.first(where: { outcomes[$0] == nil }) {
+            if !(error is BotCreatorStop), let step = steps.first(where: { outcomes[$0] == nil }) {
                 // A dropped connection mid-write leaves that write's fate unknown; the
                 // next attempt re-reads the host before writing again.
                 outcomes[step] = error as? BotFailure == .transport ? .uncertain : .failed(error.localizedDescription)
@@ -267,6 +312,27 @@ enum BotProfileName {
         } catch BotFailure.rejected(4062) {
             outcomes[.profile] = .failed(String(localized: "Hermes refused this name. It may already exist on the host."))
             throw BotCreatorStop()
+        }
+    }
+
+    /// Turns off, in the copy, what the sheet turned off. The lists are whole, so a retry
+    /// after a lost reply just sends them again. A failure is reported and fixable in the
+    /// editor, and does not stop the chat step.
+    private func configureCapabilities(_ client: any BotTransport, owner: Int) async {
+        guard steps.contains(.capabilities), outcomes[.capabilities] != .done else { return }
+        var changes = HermesCall.ProfileChanges(name: name)
+        if draft.skills != sourceSkills { changes.disabledSkills = draft.skills.filter { !$0.enabled }.map(\.id) }
+        if draft.mcpServers != sourceMCPServers { changes.enabledMCPServers = draft.mcpServers.filter(\.enabled).map(\.id) }
+        let failure = String(localized: "Some capabilities were not turned off. Edit the bot to set them.")
+        do {
+            let reply = try await client.call(.profilesConfigure(changes), validateDispatch: validate(owner))
+            try ensureOwner(owner, client)
+            let saved = (changes.disabledSkills == nil || reply["applied"]["skills"].flag == true)
+                && (changes.enabledMCPServers == nil || reply["applied"]["mcp_servers"].flag == true)
+            outcomes[.capabilities] = saved ? .done : .failed(failure)
+        } catch {
+            guard generation == owner else { return }
+            outcomes[.capabilities] = .failed(failure)
         }
     }
 
