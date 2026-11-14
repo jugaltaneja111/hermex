@@ -13,15 +13,22 @@
 # Bundle IDs use a prefix of our own (io.github.<owner>.hermex): the default
 # com.uzairansar.hermesmobile IDs belong to another team and cannot be
 # registered by a free Apple ID.
+#
+# Each build is published as a release tagged sideload-<run number>, marked as
+# the latest, so /releases/latest always has the newest IPA. PRs from other
+# repositories only get the workflow artifact: their token cannot write here.
 
 name: Sideload IPA
 
 on:
   pull_request:
+  push:
+    branches: [master]
   workflow_dispatch:
 
+# contents: write lets the job publish the IPA as a GitHub Release.
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: sideload-ipa-${{ github.event.pull_request.number || github.ref }}
@@ -137,3 +144,27 @@ jobs:
           path: Hermex-sideload.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish release
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SOURCE_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="sideload-${GITHUB_RUN_NUMBER}"
+          short="${TARGET_SHA:0:7}"
+          {
+            echo "Sideload build of \`${SOURCE_REF}\` at ${short}."
+            echo
+            echo "Install with Sideloadly or AltStore using a free Apple ID. A free Apple ID's install expires after 7 days; push notifications are not available."
+            echo
+            echo "Bundle ID: \`${BUNDLE_ID}\`"
+          } > "${RUNNER_TEMP}/notes.md"
+          gh release create "${tag}" Hermex-sideload.ipa \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${TARGET_SHA}" \
+            --title "Hermex sideload ${GITHUB_RUN_NUMBER} (${short})" \
+            --notes-file "${RUNNER_TEMP}/notes.md" \
+            --latest
