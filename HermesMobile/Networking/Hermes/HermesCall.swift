@@ -84,6 +84,39 @@ enum HermesCall: Equatable, Sendable {
     /// Removes one account, connected or still waiting. `{connection_id, connector, status: "removed"}`.
     case connectedAppsRemove(profile: String, connectionID: String)
 
+    // MCP servers, per Profile (`mcp.catalog`, `mcp.servers.*`). A host without them answers -32601.
+    // A server a plugin provides is read-only: a write to it is 4090, as is a name already taken.
+    /// `{servers: [{name, description, installed, enabled, requires, transport}]}`: the host's
+    /// presets, with the `.env` keys each needs.
+    case mcpCatalog(profile: String)
+    /// `{servers: [{name, transport, url, command, env, auth, oauth_tokens_present, enabled,
+    /// source, plugin}]}`, secrets as key names only.
+    case mcpServersList(profile: String)
+    /// Adds `name` from a catalog `preset` or an http `url`. `bearerToken` goes to the Profile's
+    /// `.env`; only its header template is saved. `{ok, name, server}`; neither is 4063.
+    case mcpServersAdd(profile: String, name: String, preset: String?, url: URL?, bearerToken: String?)
+    /// Saves a credential in the Profile's `.env` under `envVar` (the host's default when nil)
+    /// and points the server's config at it. `{ok, name, env_var, server}`.
+    case mcpServersSetAPIKey(profile: String, name: String, value: String, envVar: String?)
+    /// Connects, lists tools and disconnects. `{ok, tools, error, oauth_needed, oauth_tokens_present}`:
+    /// a server that didn't connect is `ok: false` with `error`, not a refusal.
+    case mcpServersTest(profile: String, name: String)
+    /// `{ok, removed}`; a server the Profile doesn't have is 4064.
+    case mcpServersRemove(profile: String, name: String)
+
+    // The skills hub (`skills.manage`), per Profile. Browse, search and inspect read the shared
+    // hub; install writes the Profile's skills folder.
+    /// `{items: [{name, description, source, trust, identifier}], page, total_pages, total}`.
+    case skillsHubBrowse(profile: String, page: Int)
+    /// `{results: [{name, description}]}`, at most 20, with no identifier.
+    case skillsHubSearch(profile: String, query: String)
+    /// `{info: {name, description, source, identifier, tags, skill_md_preview}}`, `{}` when the
+    /// identifier resolves nowhere.
+    case skillsHubInspect(profile: String, identifier: String)
+    /// Installs without the host's own confirmation; its security scan still runs. `{installed,
+    /// name}`, or 5031 with the reason: a blocked scan, an ambiguous name or a failed fetch.
+    case skillsHubInstall(profile: String, identifier: String)
+
     // Plugins (#1582), per Profile. A Profile the host doesn't have answers 4064.
     /// `{plugins, user_count, bundled_count}`. Every row, and on 0.22.5 it reads the catalog's pins too.
     case pluginsList(profile: String)
@@ -526,6 +559,13 @@ enum HermesCall: Equatable, Sendable {
         case .connectedAppsSettle: return "connection.respond"
         case .connectedAppsAccounts: return "connectors.accounts"
         case .connectedAppsRemove: return "connectors.accounts.remove"
+        case .mcpCatalog: return "mcp.catalog"
+        case .mcpServersList: return "mcp.servers.list"
+        case .mcpServersAdd: return "mcp.servers.add"
+        case .mcpServersSetAPIKey: return "mcp.servers.set_api_key"
+        case .mcpServersTest: return "mcp.servers.test"
+        case .mcpServersRemove: return "mcp.servers.remove"
+        case .skillsHubBrowse, .skillsHubSearch, .skillsHubInspect, .skillsHubInstall: return "skills.manage"
         case .sessionList: return "session.list"
         case .sessionCreate, .sessionNew: return "session.create"
         case .sessionTitle, .sessionRename: return "session.title"
@@ -623,6 +663,27 @@ enum HermesCall: Equatable, Sendable {
         case .connectedAppsCatalog(let profile), .connectedAppsAccounts(let profile): return ["profile": .string(profile)]
         case .connectedAppsRemove(let profile, let connectionID):
             return ["profile": .string(profile), "connection_id": .string(connectionID)]
+        case .mcpCatalog(let profile), .mcpServersList(let profile): return ["profile": .string(profile)]
+        case .mcpServersAdd(let profile, let name, let preset, let url, let bearerToken):
+            var params: [String: BotJSON] = ["profile": .string(profile), "name": .string(name)]
+            if let preset { params["preset"] = .string(preset) }
+            if let url { params["config"] = .object(["url": .string(url.absoluteString)]) }
+            if let bearerToken { params["bearer_token"] = .string(bearerToken) }
+            return params
+        case .mcpServersSetAPIKey(let profile, let name, let value, let envVar):
+            var params: [String: BotJSON] = ["profile": .string(profile), "name": .string(name), "value": .string(value)]
+            if let envVar { params["env_var"] = .string(envVar) }
+            return params
+        case .mcpServersTest(let profile, let name), .mcpServersRemove(let profile, let name):
+            return ["profile": .string(profile), "name": .string(name)]
+        case .skillsHubBrowse(let profile, let page):
+            return ["action": .string("browse"), "profile": .string(profile), "page": .number(Double(page))]
+        case .skillsHubSearch(let profile, let query):
+            return ["action": .string("search"), "profile": .string(profile), "query": .string(query)]
+        case .skillsHubInspect(let profile, let identifier):
+            return ["action": .string("inspect"), "profile": .string(profile), "query": .string(identifier)]
+        case .skillsHubInstall(let profile, let identifier):
+            return ["action": .string("install"), "profile": .string(profile), "query": .string(identifier)]
         case .pluginsList(let profile): return ["action": .string("list"), "profile": .string(profile)]
         case .pluginsToggle(let profile, let key, let enable):
             return ["action": .string("toggle"), "profile": .string(profile), "key": .string(key), "enable": .bool(enable)]
@@ -879,8 +940,19 @@ enum HermesCall: Equatable, Sendable {
         case .connectedAppsConnect(let profile, let app, let repairing):
             valid = !profile.isEmpty && !app.isEmpty && repairing?.id.isEmpty != true && repairing?.alias?.isEmpty != true
         case .connectedAppsWake(let profile, let name), .connectedAppsSettle(let profile, let name),
-             .connectedAppsRemove(let profile, let name):
+             .connectedAppsRemove(let profile, let name), .mcpServersTest(let profile, let name),
+             .mcpServersRemove(let profile, let name), .skillsHubSearch(let profile, let name),
+             .skillsHubInspect(let profile, let name), .skillsHubInstall(let profile, let name):
             valid = !profile.isEmpty && !name.isEmpty
+        case .mcpCatalog(let profile), .mcpServersList(let profile): valid = !profile.isEmpty
+        case .mcpServersAdd(let profile, let name, let preset, let url, let bearerToken):
+            // A preset or a web address, never neither; a command to run on the host is not offered.
+            let isWeb = url.map { ["http", "https"].contains($0.scheme?.lowercased() ?? "") && $0.host?.isEmpty == false }
+            valid = !profile.isEmpty && !name.isEmpty && preset?.isEmpty != true && bearerToken?.isEmpty != true
+                && isWeb != false && (preset != nil || url != nil)
+        case .mcpServersSetAPIKey(let profile, let name, let value, let envVar):
+            valid = !profile.isEmpty && !name.isEmpty && !value.isEmpty && envVar?.isEmpty != true
+        case .skillsHubBrowse(let profile, let page): valid = !profile.isEmpty && page >= 1
         case .pluginsToggle(let profile, let key, _), .pluginsRemove(let profile, let key), .pluginsUpdate(let profile, let key, _, _):
             valid = !profile.isEmpty && !key.isEmpty
         case .pluginsSettings(let profile, let key, _): valid = !profile.isEmpty && !key.isEmpty

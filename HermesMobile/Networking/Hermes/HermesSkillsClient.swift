@@ -24,6 +24,9 @@ import Foundation
         self.profile = profile
     }
 
+    /// The hub this Profile installs more skills from, on the same sign-in.
+    var hub: HermesSkillsHubClient { HermesSkillsHubClient(http: http, profile: profile) }
+
     func skills() async throws -> SkillsResponse {
         SkillsResponse(skills: try Self.skills(try await send(.skills(profile: profile))))
     }

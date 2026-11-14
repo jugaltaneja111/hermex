@@ -216,6 +216,12 @@ struct SettingsServerPage: View {
                 } label: {
                     SettingsLabel(title: String(localized: "Connected Apps"), systemImage: "app.connected.to.app.below.fill")
                 }
+
+                NavigationLink {
+                    MCPServersView(connection: hermesConnection, server: server)
+                } label: {
+                    SettingsLabel(title: String(localized: "MCP Servers"), systemImage: "server.rack")
+                }
             }
 
             OfflineDataSection(server: server)

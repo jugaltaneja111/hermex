@@ -27,6 +27,16 @@ struct SkillsView: View {
             .modifier(SkillsTitle(profile: profile))
             .onAppear { UsageReports.shared.record(.skills) }
             .toolbar {
+                // A Hermes host's Profile can install more from its skills hub.
+                if let hub = (viewModel.client as? HermesSkillsClient)?.hub {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        NavigationLink {
+                            SkillsHubView(client: hub) { Task { await loadSkills() } }
+                        } label: {
+                            Label("Discover Skills", systemImage: "plus")
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Task { await loadSkills() }

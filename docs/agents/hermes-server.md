@@ -678,6 +678,25 @@ the dashboard runs as. A row's identity is its `key`: names collide across categ
   they fail, a toggle they might cover asks. The host doesn't list bundled memory providers, so only
   a user install can be the active one.
 
+## MCP Servers
+
+The MCP Servers screen (Settings → Server → MCP Servers) manages one Profile's MCP servers
+through `HermesMCPClient`, a short-lived `BotClient` per action, with the Profile on every call.
+`mcp.servers.list` gives the rows (`name, transport, url, command, env` as key names, `auth`,
+`oauth_tokens_present`, `enabled`, `source`, `plugin`); `mcp.catalog` gives the presets
+(`name, description, installed, requires`), of which only those not added are offered, and a
+failed catalog read just offers none. Add is `mcp.servers.add {profile, name, preset}` followed
+by one `mcp.servers.set_api_key {name, value, env_var}` per key in the preset's `requires`, or
+`{profile, name, config: {url}, bearer_token?}` for a server by web address; a stdio `command`
+is never sent from the phone. A server's page offers `mcp.servers.test` (`ok: false` with
+`error` is a result, not a refusal), `set_api_key` under the host's default key name, and
+`mcp.servers.remove` behind a confirmation. Every write re-reads the list. A `source: plugin`
+row is read-only (the host answers 4090), and an `auth: oauth` server shows "finish on the
+server's machine": `mcp.servers.oauth.*` is not called. Keys and tokens are sent once and never
+stored on the phone. Refusals (4090 taken or plugin-owned, 4063 neither preset nor address,
+4064 unknown server) show the host's message; -32601 shows the too-old state. Handlers read in
+`tui_gateway/methods_tools.py` at `3b421578`; not yet exercised against a live host.
+
 ## Connected Apps
 
 The Connected Apps screen (Settings → Server → Connected Apps, #1629) manages the apps one

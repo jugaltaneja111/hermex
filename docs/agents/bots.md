@@ -896,7 +896,8 @@ look revision does not advance.
 
 Capability pickers edit only rows returned by `profiles.describe`: disabled skill
 names, the enabled toolset pin and configured MCP servers. They do not expose a
-second skills marketplace, Tasks implementation or global server settings. The
+second skills marketplace, Tasks implementation or global server settings: adding
+skills is the Skills page's hub and adding MCP servers is Settings → Server → MCP Servers. The
 existing webui Tasks, Skills and Settings screens are not linked from this editor
 because there is no verified identity mapping from a direct-Hermes connection and
 Profile to those separate webui contracts.
@@ -1209,6 +1210,19 @@ shows the start with a "Preview truncated" note. `/api/fs/*` takes any host path
 path is the folder joined with names from its own listing, never the listing's `path`, which
 the host resolves (`/private/var/…` on a Mac). A name that is empty, `.`, `..` or holds a
 separator is refused before any request.
+
+The Skills page's Discover Skills button opens the skills hub (`SkillsHubView`,
+`HermesSkillsHubClient`) for the same Profile, over `skills.manage`: `browse`
+(`{items: [{name, description, source, trust, identifier}], page, total_pages}`, a page at a
+time behind Load More), `search` (`{results: [{name, description}]}`, at most 20, sent on the
+keyboard's Search), `inspect` (`{info}` with `skill_md_preview`; `{}` shows the row's own
+fields) and `install` (`{installed, name}`). `query` carries the search text or the skill's
+identifier; a search row has no identifier, so it installs by name and the host resolves it.
+Install asks first, naming the Profile, is sent once, and waits as long as a plugin install.
+A refusal is 5031 with the host's last line (a blocked security scan, an ambiguous name, a
+failed fetch) and is shown as sent; -32601 or 4017 shows the too-old state. After an install
+the Skills list is read again. Handlers read in `tui_gateway/methods_tools.py` at `3b421578`;
+not yet exercised against a live host.
 
 ## Workspace on a Hermes host
 

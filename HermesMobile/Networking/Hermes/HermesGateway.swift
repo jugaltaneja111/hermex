@@ -637,12 +637,14 @@ private extension HermesCall {
     /// The plugin list reads the host's live catalog, so it waits twice the usual deadline, and a
     /// plugin toggle can sync the Profile's Python packages, so it waits three minutes. An install
     /// also clones the plugin first, and took 55 s for a small one, so it and an update wait five.
-    /// A canonical compaction (#1603) waits as `session.compress` does.
+    /// A canonical compaction (#1603) waits as `session.compress` does. Testing an MCP server
+    /// connects to it, and a skills hub read goes out to the hub, so each waits twice the usual;
+    /// a skill install fetches and scans the skill, so it waits as a plugin install does.
     func deadline(_ standard: Duration) -> Duration {
         switch self {
-        case .slashExec, .pluginsList: return standard * 2
+        case .slashExec, .pluginsList, .mcpServersTest, .skillsHubBrowse, .skillsHubSearch, .skillsHubInspect: return standard * 2
         case .pluginsToggle: return standard * 6
-        case .pluginsInstall, .pluginsUpdate: return standard * 10
+        case .pluginsInstall, .pluginsUpdate, .skillsHubInstall: return standard * 10
         case .approvalSummary: return min(standard, .seconds(20))
         case .commitMessage, .displayStart: return .seconds(120)
         case .sessionCompress: return .seconds(660)
@@ -660,7 +662,8 @@ private extension HermesCall {
     /// refused project change or move, such as 5063 naming the project that has the folder (#1052),
     /// a refused branch, whose 5008 message names the session using its name (#1051), and a
     /// refused plugin toggle, install, removal, update or setting, whose message says why (#1582),
-    /// and a refused app sign-in or account removal, whose message is the host's reason (#1629).
+    /// and a refused app sign-in or account removal, whose message is the host's reason (#1629),
+    /// and a refused MCP server write or skill install, whose message says why.
     var rejection: Rejection {
         if method.hasPrefix("groups.") { return .room }
         if method.hasPrefix("display.") { return .screen }
@@ -670,7 +673,8 @@ private extension HermesCall {
         case .commandDispatch(let name, _, _) where name == "goal": return .setting
         case .slashExec, .sessionRename, .promptRewind, .sessionUndo, .sessionCompress, .sessionWorkspaceMove, .sessionMutate,
              .projectsCreate, .projectsUpdate, .projectsDelete, .sessionBranch, .pluginsToggle, .pluginsInstall,
-             .pluginsRemove, .pluginsUpdate, .pluginsSettings, .connectedAppsConnect, .connectedAppsRemove: return .setting
+             .pluginsRemove, .pluginsUpdate, .pluginsSettings, .connectedAppsConnect, .connectedAppsRemove,
+             .mcpServersAdd, .mcpServersSetAPIKey, .mcpServersRemove, .skillsHubInstall: return .setting
         default: return .plain
         }
     }
