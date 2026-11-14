@@ -293,6 +293,37 @@ struct BotProfileDetails: Equatable, Sendable {
 
     func save() async { await save(fields: dirtyFields, confirmedModel: false) }
 
+    /// Re-reads the skills and MCP servers after one was added from the editor's lists, keeping
+    /// the toggles changed here but not saved yet. A failed read leaves the rows as they were.
+    func refreshCapabilities() async {
+        guard state == .loaded, !isSaving, let client = wire else { return }
+        let owner = generation
+        let details: BotProfileDetails
+        do {
+            let payload = try await client.call(.profilesDescribe(name: profile.id), validateDispatch: validate(owner))
+            try ensureOwner(owner, client)
+            details = BotProfileDetails(payload, expectedName: profile.id)
+        } catch { return }
+        guard details.name == profile.id, state == .loaded, !isSaving else { return }
+        draft.skills = Self.keepingEdits(details.skills, draft: draft.skills, baseline: baseline.skills)
+        baseline.skills = details.skills
+        draft.mcpServers = Self.keepingEdits(details.mcpServers, draft: draft.mcpServers, baseline: baseline.mcpServers)
+        baseline.mcpServers = details.mcpServers
+    }
+
+    /// `fresh` rows, with each row the user toggled since `baseline` keeping the user's value.
+    private static func keepingEdits(_ fresh: [BotProfileCapability], draft: [BotProfileCapability],
+                                     baseline: [BotProfileCapability]) -> [BotProfileCapability] {
+        let was = Dictionary(baseline.map { ($0.id, $0.enabled) }, uniquingKeysWith: { first, _ in first })
+        let now = Dictionary(draft.map { ($0.id, $0.enabled) }, uniquingKeysWith: { first, _ in first })
+        return fresh.map { row in
+            guard let before = was[row.id], let edited = now[row.id], before != edited else { return row }
+            var row = row
+            row.enabled = edited
+            return row
+        }
+    }
+
     func confirmModelChange() async {
         confirmation = nil
         await save(fields: [.model], confirmedModel: true)

@@ -267,7 +267,25 @@ import SwiftUI
 
     private func capabilityPicker(_ field: BotProfileEditor.Field) -> some View {
         BotCapabilityPicker(title: field.title, items: capabilities(field),
-                            setEnabled: { editor.setEnabled($0, field: field, id: $1) }) { capabilitySheet = nil }
+                            setEnabled: { editor.setEnabled($0, field: field, id: $1) },
+                            done: { capabilitySheet = nil }) {
+            switch field {
+            case .skills:
+                NavigationLink {
+                    SkillsHubView(client: HermesSkillsHubClient(
+                        http: HermesConnections.shared.connection(for: editor.connection, server: editor.server),
+                        profile: editor.profile.id)) {}
+                        .onDisappear { Task { await editor.refreshCapabilities() } }
+                } label: { Label("Discover Skills", systemImage: "plus") }
+            case .mcpServers:
+                NavigationLink {
+                    MCPServersView(connection: editor.connection, server: editor.server, profile: editor.profile.id)
+                        .onDisappear { Task { await editor.refreshCapabilities() } }
+                } label: { Label("Add Server", systemImage: "plus") }
+            default:
+                EmptyView()
+            }
+        }
     }
 
     private var modelPicker: some View {
@@ -359,15 +377,23 @@ import SwiftUI
 
 /// One list of a bot's skills, toolsets or MCP servers as on/off rows, for the editor
 /// and the duplicate sheet. It only reports taps: the owner holds the rows.
-struct BotCapabilityPicker: View {
+struct BotCapabilityPicker<Add: View>: View {
     let title: String
     let items: [BotProfileCapability]
     let setEnabled: (Bool, String) -> Void
     let done: () -> Void
+    /// A row above the list that adds to it, such as the editor's link to add an MCP server.
+    let add: Add
+
+    init(title: String, items: [BotProfileCapability], setEnabled: @escaping (Bool, String) -> Void,
+         done: @escaping () -> Void, @ViewBuilder add: () -> Add) {
+        self.title = title; self.items = items; self.setEnabled = setEnabled; self.done = done; self.add = add()
+    }
 
     var body: some View {
         NavigationStack {
             AppList {
+                add
                 ForEach(items) { item in
                     Toggle(isOn: Binding(get: { item.enabled }, set: { setEnabled($0, item.id) })) {
                         VStack(alignment: .leading, spacing: 3) {
@@ -382,5 +408,12 @@ struct BotCapabilityPicker: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: done) } }
         }
         .adaptiveFormPresentation()
+    }
+}
+
+extension BotCapabilityPicker where Add == EmptyView {
+    init(title: String, items: [BotProfileCapability], setEnabled: @escaping (Bool, String) -> Void,
+         done: @escaping () -> Void) {
+        self.init(title: title, items: items, setEnabled: setEnabled, done: done) { EmptyView() }
     }
 }

@@ -110,7 +110,8 @@ import SwiftUI
             .navigationDestination(isPresented: $showsExpressions) { expressionPicker }
             .sheet(item: $capabilitySheet) { capability in
                 BotCapabilityPicker(title: capability.title, items: items(capability),
-                                    setEnabled: { creator.setEnabled($0, capability, id: $1) }) { capabilitySheet = nil }
+                                    setEnabled: { creator.setEnabled($0, capability, id: $1) },
+                                    done: { capabilitySheet = nil })
             }
             .sheet(isPresented: $showsDescribe) {
                 BotAvatarDescribeSheet(send: { [creator] prompt in try await creator.sendAvatarPrompt(prompt) }) { generated in

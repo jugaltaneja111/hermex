@@ -41,6 +41,26 @@ import SwiftUI
         XCTAssertEqual(params["disabled_skills"], .array([.string("research")]))
     }
 
+    /// A server added from the MCP list shows on return, and a toggle changed before it stays.
+    func testRefreshAfterAnAddShowsTheNewServerAndKeepsUnsavedToggles() async throws {
+        let (editor, wire, _) = try makeEditor(details: details())
+        await editor.load()
+        editor.setEnabled(false, field: .mcpServers, id: "linear")
+        wire.details = .object([
+            "name": .string("same"),
+            "mcp_servers": .array([
+                .object(["name": .string("linear"), "transport": .string("http"), "enabled": .bool(true)]),
+                .object(["name": .string("github"), "transport": .string("http"), "enabled": .bool(true)])
+            ])
+        ])
+
+        await editor.refreshCapabilities()
+
+        XCTAssertEqual(editor.draft.mcpServers.map(\.id), ["linear", "github"])
+        XCTAssertEqual(editor.draft.mcpServers.first { $0.id == "linear" }?.enabled, false)
+        XCTAssertEqual(editor.dirtyFields, [.mcpServers])
+    }
+
     /// Control Center and banners (`.inactive`) keep the editor's connection; only the
     /// background drops it, and the return reloads once (#902).
     func testOnlyTheBackgroundDropsTheEditorAndTheReturnReloadsOnce() async throws {

@@ -10,8 +10,9 @@ struct MCPServersView: View {
     /// A refusal from the keys sheet, held until the sheet is gone: an alert can't show under it.
     @State private var heldError: String?
 
-    init(connection: BotConnection, server: URL) {
-        _model = State(initialValue: MCPServersModel(client: HermesMCPClient(saved: connection, server: server)))
+    /// `profile` opens on that Profile, as the bot editor does; nil starts on the host's default.
+    init(connection: BotConnection, server: URL, profile: String? = nil) {
+        _model = State(initialValue: MCPServersModel(client: HermesMCPClient(saved: connection, server: server), profile: profile))
     }
 
     var body: some View {

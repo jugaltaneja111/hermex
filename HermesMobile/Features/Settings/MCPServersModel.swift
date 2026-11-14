@@ -32,7 +32,11 @@ final class MCPServersModel {
     /// Bumped by each read, so only the latest one applies after a Profile switch.
     @ObservationIgnored private var readSerial = 0
 
-    init(client: HermesMCPClient) { self.client = client }
+    /// `profile` is shown first while the host still lists it.
+    init(client: HermesMCPClient, profile: String? = nil) {
+        self.client = client
+        self.profile = profile
+    }
 
     func server(_ name: String) -> HermesMCPServer? { servers.first { $0.name == name } }
 
