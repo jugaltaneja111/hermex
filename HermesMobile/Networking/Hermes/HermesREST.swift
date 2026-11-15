@@ -184,6 +184,8 @@ enum HermesREST: Equatable, Sendable {
     case messagingPlatforms(profile: String)
     /// One Profile's memory state: `active` is its provider, empty for the built-in one.
     case memoryStatus(profile: String)
+    /// Deletes one Profile's built-in memory files (`MEMORY.md` and `USER.md`): `{ok, deleted}`.
+    case memoryReset(profile: String)
     /// `{entries, removed, generated_at}`, about 2.9 MB for 976 entries at 0.22.5. Not per Profile.
     case pluginCatalog
     case pushPairing
@@ -507,6 +509,8 @@ enum HermesREST: Equatable, Sendable {
         case .restartGateway(let profile): return try Self.send("POST", try Self.url(base, "api/gateway/restart", profile: profile), [:])
         case .messagingPlatforms(let profile): return Self.get(try Self.url(base, "api/messaging/platforms", profile: profile))
         case .memoryStatus(let profile): return Self.get(try Self.url(base, "api/memory", profile: profile))
+        case .memoryReset(let profile):
+            return try Self.send("POST", try Self.url(base, "api/memory/reset", profile: profile), ["target": .string("all")])
         case .pluginCatalog: return Self.get(base.appendingPathComponent("api/dashboard/plugins/catalog"))
         case .pushPairing: return Self.get(base.appendingPathComponent("api/plugins/hermex-push/pairing"))
         case .pluginCapabilities: return Self.get(base.appendingPathComponent("api/plugins/hermex-push/capabilities"))

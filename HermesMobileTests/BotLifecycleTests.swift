@@ -157,13 +157,47 @@ import XCTest
 
         await creator.create()
 
-        XCTAssertEqual(wire.calls.map(\.0), ["model.options", "profiles.describe", "profiles.create", "profiles.configure",
+        XCTAssertEqual(wire.calls.map(\.0), ["model.options", "profiles.describe", "plugins.manage", "profiles.create", "profiles.configure",
                                              "profiles.configure", "session.list", "session.create", "session.title"])
-        let changes = wire.calls[3].1
+        let changes = wire.calls[4].1
         XCTAssertEqual(changes["name"], .string("triage-copy"), "the copy is changed, never the source")
         XCTAssertEqual(changes["disabled_skills"], .array([.string("calendar"), .string("old")]), "what the source had off stays off")
         XCTAssertEqual(changes["enabled_mcp_servers"], .array([.string("linear")]))
         XCTAssertEqual(creator.phase, .created); XCTAssertFalse(creator.needsAttention)
+    }
+
+    func testNewBotCopyingASetupKeepsItsOwnInstructionsAndDropsWhatWasTurnedOff() async throws {
+        let triage = try XCTUnwrap(BotProfile(row("triage")))
+        let (creator, wire) = try makeCreator(roster: [row("triage")])
+        wire.describe = sourceDetails
+        wire.plugins = .object(["plugins": .array([
+            .object(["key": .string("clinepass"), "name": .string("clinepass"), "status": .string("enabled"), "source": .string("git")]),
+            .object(["key": .string("spotify"), "name": .string("spotify"), "status": .string("enabled"), "source": .string("git")]),
+            .object(["key": .string("idle"), "name": .string("idle"), "status": .string("disabled"), "source": .string("git")])])])
+        // The host clones the source's model: it reports neither a pin nor an inherited model.
+        wire.create = { params in .object(["ok": .bool(true), "name": params["name"] ?? .null, "model_set": .bool(false)]) }
+        await creator.load()
+        await creator.setSetupSource(triage)
+        XCTAssertEqual(creator.draft.plugins.map(\.id), ["clinepass", "spotify"], "only what the source has on can be turned off")
+        XCTAssertFalse(creator.draft.keepsMemory, "a new bot starts without the source's memory")
+        creator.setTitle("Trader"); creator.setInstructions("Watch the markets.")
+        creator.setSkipsBundledSkills(true)
+        creator.setEnabled(false, .plugins, id: "spotify")
+
+        await creator.create()
+
+        let create = try XCTUnwrap(wire.calls.first { $0.0 == "profiles.create" }?.1)
+        XCTAssertEqual(create["clone_from"], .string("triage"))
+        XCTAssertEqual(create["soul"], .string("Watch the markets."), "the new bot gets its own instructions")
+        XCTAssertNil(create["no_skills"], "the host refuses no_skills with clone_from")
+        let toggles = wire.calls.filter { $0.0 == "plugins.manage" && $0.1["action"] == .string("toggle") }.map(\.1)
+        XCTAssertEqual(toggles.count, 1)
+        XCTAssertEqual(toggles.first?["profile"], .string("trader"), "the copy is changed, never the source")
+        XCTAssertEqual(toggles.first?["key"], .string("spotify")); XCTAssertEqual(toggles.first?["enable"], .bool(false))
+        XCTAssertEqual(memoryResets, ["trader"])
+        XCTAssertEqual(creator.phase, .created)
+        XCTAssertNil(creator.note, "a copy keeps the source's model")
+        XCTAssertFalse(creator.needsAttention)
     }
 
     func testUntouchedDuplicateWritesNoCapabilities() async throws {
@@ -457,6 +491,9 @@ import XCTest
 
     // MARK: - Helpers
 
+    /// Each Profile whose memory a create cleared.
+    private var memoryResets: [String] = []
+
     private func makeCreator(roster: [BotJSON], source: BotProfile? = nil, store: BotConnectionStore? = nil,
                              onCreated: @escaping (String) -> Void = { _ in }) throws -> (BotCreator, BotLifecycleFixtureWire) {
         let store = try store ?? {
@@ -468,7 +505,8 @@ import XCTest
         let connection = try XCTUnwrap(store.load(server: server))
         let wire = BotLifecycleFixtureWire(roster: roster)
         let creator = BotCreator(server: server, connection: connection, roster: roster.compactMap(BotProfile.init),
-                                 source: source, store: store, makeWire: { _ in wire }, onCreated: onCreated)
+                                 source: source, store: store, makeWire: { _ in wire },
+                                 resetMemory: { [weak self] in self?.memoryResets.append($0) }, onCreated: onCreated)
         return (creator, wire)
     }
 
@@ -528,6 +566,8 @@ import XCTest
     var create: (([String: BotJSON]) throws -> BotJSON)?
     /// The source's `profiles.describe` reply; the read fails when nil.
     var describe: BotJSON?
+    /// The source's `plugins.manage list` reply; the read fails when nil.
+    var plugins: BotJSON?
     var configure: (([String: BotJSON]) throws -> BotJSON)?
     var sessionCreate: (([String: BotJSON]) throws -> BotJSON)?
     var title: (([String: BotJSON]) throws -> BotJSON)?
@@ -565,6 +605,10 @@ import XCTest
             if let configure { return try configure(params) }
             return .object(["ok": .bool(true), "applied": .object(["ui_meta": .bool(true), "skills": .bool(true), "mcp_servers": .bool(true),
                                                             "ui_meta_revisions": .object(["hermes-bots": .number(1)])])])
+        case "plugins.manage":
+            if params["action"] == .string("toggle") { return .object(["ok": .bool(true)]) }
+            guard let plugins else { throw BotFailure.unsupported }
+            return plugins
         case "session.list": return .object(["sessions": .array(sessions)])
         case "session.create":
             if let sessionCreate { return try sessionCreate(params) }

@@ -30,21 +30,25 @@ enum BotProfileName {
 
 /// One bot creation or duplication for one connection. Setup is three host writes
 /// in order: the Profile (`profiles.create`), its look (`profiles.configure`) and
-/// its canonical "Bot Chat" (`session.create` + `session.title`). A duplicate whose
-/// skills or MCP servers were changed in the sheet adds one more `profiles.configure`
-/// after the Profile: the host copies everything, so that write turns the rest off.
+/// its canonical "Bot Chat" (`session.create` + `session.title`). A copy, either a
+/// duplicate or a new bot that copies another bot's setup, is a `clone_from`: the host
+/// copies config, keys, plugins, skills and MCP servers. When the sheet turned some of
+/// them off, a capabilities step (`profiles.configure`, `plugins.manage toggle`) turns
+/// them off in the copy, and when it chose not to copy memory, a memory step deletes
+/// the copied memory files.
 /// Each step records
 /// its own outcome; Try Again repeats only the steps that are not done, and a
 /// step whose reply was lost re-reads the host before writing again, so a retry
 /// never mints a second Profile or a second chat.
 @MainActor @Observable final class BotCreator {
     enum Step: CaseIterable, Identifiable {
-        case profile, capabilities, look, chat
+        case profile, capabilities, memory, look, chat
         var id: Self { self }
         var title: String {
             switch self {
             case .profile: return String(localized: "Profile")
             case .capabilities: return String(localized: "Capabilities")
+            case .memory: return String(localized: "Memory")
             case .look: return String(localized: "Look")
             case .chat: return String(localized: "Bot Chat")
             }
@@ -52,13 +56,15 @@ enum BotProfileName {
     }
     enum Outcome: Equatable { case done, failed(String), uncertain }
     enum Phase: Equatable { case editing, creating, created }
-    /// The source bot's lists a duplicate can switch rows of.
-    enum Capability: String, Identifiable {
-        case skills, mcpServers
+    /// The source bot's lists a copy can switch rows of.
+    enum Capability: String, Identifiable, CaseIterable {
+        case skills, toolsets, plugins, mcpServers
         var id: String { rawValue }
         var title: String {
             switch self {
             case .skills: return String(localized: "Skills")
+            case .toolsets: return String(localized: "Toolsets")
+            case .plugins: return String(localized: "Plugins")
             case .mcpServers: return String(localized: "MCP servers")
             }
         }
@@ -73,22 +79,35 @@ enum BotProfileName {
         /// place. Off: `mirror_credentials: false`, the bot starts with none. Values
         /// never travel to the phone either way.
         var sharesCredentials = true
-        /// New bots only: becomes the Profile's `SOUL.md` when it has text; empty
-        /// keeps the host's default. A duplicate copies the source's instead.
+        /// New bots only: becomes the Profile's `SOUL.md` when it has text. Empty keeps
+        /// the host's default, or the instructions of the bot whose setup is copied.
+        /// A duplicate copies the source's instead.
         var instructions = ""
-        /// New bots only: `no_skills`, so the host seeds only its essential skills.
-        /// The host refuses it with `clone_from`, since a copy brings the source's skills.
+        /// New bots that copy no setup only: `no_skills`, so the host seeds only its
+        /// essential skills. The host refuses it with `clone_from`, since a copy brings
+        /// the source's skills.
         var skipsBundledSkills = false
-        /// Duplicates only: the source's skills and MCP servers as the copy should have
-        /// them. Empty until `load()` has read the source, and for a new bot.
+        /// Copies only: the source's skills, toolsets, enabled plugins and MCP servers as
+        /// the copy should have them. Empty until the source has been read.
         var skills: [BotProfileCapability] = []
+        var toolsets: [BotProfileCapability] = []
+        var plugins: [BotProfileCapability] = []
         var mcpServers: [BotProfileCapability] = []
+        /// Copies only: off deletes the copied memory files after the clone. A duplicate
+        /// keeps them by default; a new bot that copies a setup starts without them.
+        var keepsMemory = true
     }
 
     let server: URL
     let connection: BotConnection
-    /// The bot being duplicated, whose config, skills and instructions the host clones.
-    let source: BotProfile?
+    /// The bot being copied: the one duplicated, or the one whose setup a new bot copies.
+    /// The host clones its config, keys, plugins and skills, and for a duplicate its
+    /// instructions.
+    private(set) var source: BotProfile?
+    /// True for Duplicate. A new bot can still copy a setup, which sets `source`.
+    let isDuplicate: Bool
+    /// The bots a new bot can copy the setup of.
+    let setupSources: [BotProfile]
     private(set) var draft: Draft
     private(set) var phase = Phase.editing
     /// True while the socket and model inventory are being opened; Create waits for it.
@@ -99,9 +118,9 @@ enum BotProfileName {
     /// ended up without a model, so the user knows to finish setup.
     private(set) var note: String?
 
-    /// The source's lists as `load()` read them, which is what a clone starts with.
-    private var sourceSkills: [BotProfileCapability] = []
-    private var sourceMCPServers: [BotProfileCapability] = []
+    /// The source's lists as they were read, which is what a clone starts with.
+    private var sourceLists: SourceLists?
+    private let resetMemory: @MainActor (String) async throws -> Void
     private var taken: Set<String>
     private var wire: (any BotTransport)?
     private var generation = 0
@@ -111,10 +130,17 @@ enum BotProfileName {
 
     init(server: URL, connection: BotConnection, roster: [BotProfile], source: BotProfile? = nil,
          store: BotConnectionStore? = nil, makeWire: (@MainActor (BotConnection) -> any BotTransport)? = nil,
+         resetMemory: (@MainActor (String) async throws -> Void)? = nil,
          onCreated: @escaping (String) -> Void = { _ in }) {
         self.server = server; self.connection = connection; self.source = source
+        isDuplicate = source != nil
+        setupSources = roster
         self.store = store ?? BotConnectionStore()
         self.makeWire = makeWire ?? { BotClient(saved: $0, server: server) }; self.onCreated = onCreated
+        self.resetMemory = resetMemory ?? { profile in
+            let reply = try await HermesConnections.shared.connection(for: connection, server: server).reply(.memoryReset(profile: profile))
+            guard (200..<300).contains(reply.status) else { throw BotFailure.unsupported }
+        }
         taken = Set(roster.map(\.id))
         var draft = Draft()
         if let source {
@@ -149,11 +175,12 @@ enum BotProfileName {
     var canCreate: Bool {
         phase == .editing && !isLoading && BotProfileName.isValid(name) && (hasStarted || !nameIsTaken)
     }
-    var isDuplicate: Bool { source != nil }
-    /// The steps this create runs: the capabilities write only when the sheet changed a row.
+    /// The steps this create runs: the capabilities write only when the sheet changed a
+    /// row, and the memory step only when a copy should not keep the source's memory.
     var steps: [Step] {
-        let changed = draft.skills != sourceSkills || draft.mcpServers != sourceMCPServers
-        return Step.allCases.filter { $0 != .capabilities || changed }
+        let changed = sourceLists.map { $0 != SourceLists(draft) } ?? false
+        let clearsMemory = source != nil && !draft.keepsMemory
+        return Step.allCases.filter { ($0 != .capabilities || changed) && ($0 != .memory || clearsMemory) }
     }
     /// True after a create that finished with something left to do: a look that
     /// did not save or a bot with no model. The sheet stays up to say so.
@@ -165,13 +192,37 @@ enum BotProfileName {
     func setSharesCredentials(_ value: Bool) { draft.sharesCredentials = value }
     func setInstructions(_ value: String) { draft.instructions = value }
     func setSkipsBundledSkills(_ value: Bool) { draft.skipsBundledSkills = value }
+    func setKeepsMemory(_ value: Bool) { draft.keepsMemory = value }
     func setEnabled(_ enabled: Bool, _ capability: Capability, id: String) {
         switch capability {
-        case .skills:
-            if let index = draft.skills.firstIndex(where: { $0.id == id }) { draft.skills[index].enabled = enabled }
-        case .mcpServers:
-            if let index = draft.mcpServers.firstIndex(where: { $0.id == id }) { draft.mcpServers[index].enabled = enabled }
+        case .skills: Self.set(enabled, id: id, in: &draft.skills)
+        case .toolsets: Self.set(enabled, id: id, in: &draft.toolsets)
+        case .plugins: Self.set(enabled, id: id, in: &draft.plugins)
+        case .mcpServers: Self.set(enabled, id: id, in: &draft.mcpServers)
         }
+    }
+    func items(_ capability: Capability) -> [BotProfileCapability] {
+        switch capability {
+        case .skills: return draft.skills
+        case .toolsets: return draft.toolsets
+        case .plugins: return draft.plugins
+        case .mcpServers: return draft.mcpServers
+        }
+    }
+    private static func set(_ enabled: Bool, id: String, in rows: inout [BotProfileCapability]) {
+        if let index = rows.firstIndex(where: { $0.id == id }) { rows[index].enabled = enabled }
+    }
+
+    /// New bots only, before anything is written: copy `profile`'s setup, or nil for a
+    /// fresh bot. Its lists are read again, and its memory is not copied unless asked.
+    func setSetupSource(_ profile: BotProfile?) async {
+        guard !isDuplicate, !hasStarted, phase == .editing, profile?.id != source?.id else { return }
+        source = profile
+        sourceLists = nil
+        draft.skills = []; draft.toolsets = []; draft.plugins = []; draft.mcpServers = []
+        draft.keepsMemory = false
+        guard let client = wire else { return }
+        await readSource(client, owner: generation)
     }
     func setShape(_ shape: BotAvatarShape) {
         draft.appearance.shape = shape.rawValue; draft.appearance.custom = true; draft.appearance.imageKind = "shape"
@@ -217,17 +268,34 @@ enum BotProfileName {
                 modelGroups = HermesModelCatalog(options).groups
             }
             // Read once: a later load must not undo what the sheet already switched.
-            if let source, sourceSkills.isEmpty, sourceMCPServers.isEmpty, !hasStarted,
-               let payload = try? await client.call(.profilesDescribe(name: source.id), validateDispatch: validate(owner)) {
-                try ensureOwner(owner, client)
-                let details = BotProfileDetails(payload, expectedName: source.id)
-                sourceSkills = details.skills; sourceMCPServers = details.mcpServers
-                draft.skills = details.skills; draft.mcpServers = details.mcpServers
-            }
+            if sourceLists == nil, !hasStarted { await readSource(client, owner: owner) }
         } catch {
             guard generation == owner, wire === client else { return }
             client.close(); wire = nil
         }
+    }
+
+    /// Reads the source's lists, which the sheet then switches rows of. A list that can't
+    /// be read stays empty, and the copy keeps all of it. Plugins list only those the
+    /// source has on, since only those can be turned off in the copy.
+    private func readSource(_ client: any BotTransport, owner: Int) async {
+        guard let source else { return }
+        let profile = source.id
+        var lists = SourceLists()
+        if let payload = try? await client.call(.profilesDescribe(name: profile), validateDispatch: validate(owner)) {
+            let details = BotProfileDetails(payload, expectedName: profile)
+            lists.skills = details.skills; lists.toolsets = details.toolsets; lists.mcpServers = details.mcpServers
+        }
+        if let payload = try? await client.call(.pluginsList(profile: profile), validateDispatch: validate(owner)) {
+            lists.plugins = (payload["plugins"].list ?? []).compactMap(HermesPlugin.init).filter(\.isEnabled).map {
+                BotProfileCapability(id: $0.key, name: $0.name, detail: $0.summary.isEmpty ? nil : $0.summary, enabled: true)
+            }
+        }
+        // The sheet may have moved on to another source, or closed, while this read.
+        guard generation == owner, self.source?.id == profile, !hasStarted else { return }
+        sourceLists = lists
+        draft.skills = lists.skills; draft.toolsets = lists.toolsets
+        draft.plugins = lists.plugins; draft.mcpServers = lists.mcpServers
     }
 
     func close() {
@@ -259,6 +327,7 @@ enum BotProfileName {
             }
             try await createProfile(client, owner: owner)
             await configureCapabilities(client, owner: owner)
+            await clearMemory(owner: owner)
             await configureLook(client, owner: owner)
             try await ensureChat(client, owner: owner)
             guard generation == owner else { return }
@@ -289,14 +358,11 @@ enum BotProfileName {
         var profile = HermesCall.NewProfile(name: name, sharesCredentials: draft.sharesCredentials)
         let role = draft.role.trimmingCharacters(in: .whitespacesAndNewlines)
         if !role.isEmpty { profile.description = role }
-        if let source {
-            profile.cloneFrom = source.id
-        } else {
-            if !draft.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                profile.soul = draft.instructions
-            }
-            profile.skipsBundledSkills = draft.skipsBundledSkills
-        }
+        let instructions = draft.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let source { profile.cloneFrom = source.id }
+        // A new bot that copies a setup still gets its own instructions; a duplicate keeps the source's.
+        if !isDuplicate, !instructions.isEmpty { profile.soul = draft.instructions }
+        if source == nil { profile.skipsBundledSkills = draft.skipsBundledSkills }
         if let model = draft.model, let provider = model.providerID {
             profile.model = HermesCall.Model(id: model.id, provider: provider)
         }
@@ -306,7 +372,9 @@ enum BotProfileName {
             guard reply["ok"].flag == true else { throw BotFailure.unsupported }
             outcomes[.profile] = .done
             taken.insert(name)
-            if reply["model_set"].flag != true, reply["mirrored"]["model_inherited"].flag != true {
+            // A copy without a picked model keeps the source's, which the host reports as neither.
+            let keepsSourceModel = source != nil && profile.model == nil
+            if !keepsSourceModel, reply["model_set"].flag != true, reply["mirrored"]["model_inherited"].flag != true {
                 note = String(localized: "No model is set for this bot yet. Pick one in Edit or in Hermes Desktop before chatting.")
             }
         } catch BotFailure.rejected(4062) {
@@ -319,20 +387,44 @@ enum BotProfileName {
     /// after a lost reply just sends them again. A failure is reported and fixable in the
     /// editor, and does not stop the chat step.
     private func configureCapabilities(_ client: any BotTransport, owner: Int) async {
-        guard steps.contains(.capabilities), outcomes[.capabilities] != .done else { return }
+        guard steps.contains(.capabilities), outcomes[.capabilities] != .done, let original = sourceLists else { return }
         var changes = HermesCall.ProfileChanges(name: name)
-        if draft.skills != sourceSkills { changes.disabledSkills = draft.skills.filter { !$0.enabled }.map(\.id) }
-        if draft.mcpServers != sourceMCPServers { changes.enabledMCPServers = draft.mcpServers.filter(\.enabled).map(\.id) }
+        if draft.skills != original.skills { changes.disabledSkills = draft.skills.filter { !$0.enabled }.map(\.id) }
+        if draft.toolsets != original.toolsets { changes.enabledToolsets = draft.toolsets.filter(\.enabled).map(\.id) }
+        if draft.mcpServers != original.mcpServers { changes.enabledMCPServers = draft.mcpServers.filter(\.enabled).map(\.id) }
         let failure = String(localized: "Some capabilities were not turned off. Edit the bot to set them.")
         do {
-            let reply = try await client.call(.profilesConfigure(changes), validateDispatch: validate(owner))
-            try ensureOwner(owner, client)
-            let saved = (changes.disabledSkills == nil || reply["applied"]["skills"].flag == true)
-                && (changes.enabledMCPServers == nil || reply["applied"]["mcp_servers"].flag == true)
+            var saved = true
+            if changes != HermesCall.ProfileChanges(name: name) {
+                let reply = try await client.call(.profilesConfigure(changes), validateDispatch: validate(owner))
+                try ensureOwner(owner, client)
+                saved = (changes.disabledSkills == nil || reply["applied"]["skills"].flag == true)
+                    && (changes.enabledToolsets == nil || reply["applied"]["toolsets"].flag == true)
+                    && (changes.enabledMCPServers == nil || reply["applied"]["mcp_servers"].flag == true)
+            }
+            // Turning a plugin off twice is harmless, so a retry sends every one again.
+            for plugin in draft.plugins where !plugin.enabled {
+                _ = try await client.call(.pluginsToggle(profile: name, key: plugin.id, enable: false), validateDispatch: validate(owner))
+                try ensureOwner(owner, client)
+            }
             outcomes[.capabilities] = saved ? .done : .failed(failure)
         } catch {
             guard generation == owner else { return }
             outcomes[.capabilities] = .failed(failure)
+        }
+    }
+
+    /// Deletes the memory files the clone copied. Deleting again is harmless, so a retry
+    /// just sends it again. A failure is reported and does not stop the chat step.
+    private func clearMemory(owner: Int) async {
+        guard steps.contains(.memory), outcomes[.memory] != .done else { return }
+        do {
+            try await resetMemory(name)
+            guard generation == owner else { return }
+            outcomes[.memory] = .done
+        } catch {
+            guard generation == owner else { return }
+            outcomes[.memory] = .failed(String(localized: "The copied memory was not cleared."))
         }
     }
 
@@ -403,6 +495,19 @@ enum BotProfileName {
             guard let self, self.generation == owner else { return }
             self.wire = nil
         }
+    }
+}
+
+/// A source's switchable lists, as read and as the sheet left them.
+private struct SourceLists: Equatable {
+    var skills: [BotProfileCapability] = []
+    var toolsets: [BotProfileCapability] = []
+    var plugins: [BotProfileCapability] = []
+    var mcpServers: [BotProfileCapability] = []
+
+    init() {}
+    init(_ draft: BotCreator.Draft) {
+        skills = draft.skills; toolsets = draft.toolsets; plugins = draft.plugins; mcpServers = draft.mcpServers
     }
 }
 

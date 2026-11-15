@@ -1637,21 +1637,35 @@ so a retry never mints a second Profile or chat. A look failure is reported
 and the chat step still runs; the Edit screen fixes the look later. Leaving
 the sheet mid-write marks pending steps uncertain; nothing retries on its own.
 
-A duplicate's sheet reads the source's `profiles.describe` and lists its skills
-and MCP servers as on/off rows. The host has no selective clone, so `clone_from`
-still copies everything; when a row was changed, one more `profiles.configure`
-follows `profiles.create` with `disabled_skills` and/or `enabled_mcp_servers`
-(only the list that changed, each sent whole, so a retry repeats it safely). A
-skill turned off there is disabled in the copy, not absent from its folder. A
-failed read shows no rows and copies everything; a failed write is reported
-like the look and fixed in the Edit screen.
+A new bot can also copy another bot's setup ("Copy Setup From"). A fresh
+`profiles.create` gets only the launch Profile's model block and `.env`: no
+plugins (a model provider such as ClinePass is a per-Profile plugin, so the pin
+fails with "Unknown provider"), no MCP servers, toolset pins or tool settings.
+So a copied setup is a `clone_from` too, with the new bot's own `soul` when its
+instructions have text (the host writes it after the clone) and never
+`no_skills`.
+
+A copy's sheet, Duplicate or Copy Setup From, reads the source's
+`profiles.describe` and `plugins.manage list` and lists its skills, toolsets,
+enabled plugins and MCP servers as on/off rows. The host has no selective clone,
+so `clone_from` still copies everything; when a row was changed, a capabilities
+step follows `profiles.create`: one `profiles.configure` with `disabled_skills`,
+`enabled_toolsets` and/or `enabled_mcp_servers` (only the lists that changed,
+each sent whole), then `plugins.manage toggle` off on the copy for each plugin
+turned off, so a retry repeats it safely. A skill turned off there is disabled
+in the copy, not absent from its folder. A failed read shows no rows and copies
+everything; a failed write is reported like the look and fixed in the Edit
+screen. The clone also copies `memories/MEMORY.md` and `USER.md`: Duplicate
+keeps them by default, Copy Setup From does not, and a memory step deletes them
+with `POST /api/memory/reset?profile=<copy>` (`target: all`).
 
 Credential inheritance is one explicit switch, on by default: on sends
 `share_auth: true` so the bot reads the host's `auth.json` in place (one token
 pool, no forked refresh), off sends `mirror_credentials: false` so the bot
 starts with no keys. Secret values never reach the phone. A create whose reply
 reports neither `model_set` nor `mirrored.model_inherited` shows a one-line
-note to pick a model. Duplicates clone config, skills and `SOUL.md` through
+note to pick a model, except a copy with no model picked, which keeps its
+source's. Duplicates clone config, skills and `SOUL.md` through
 `clone_from`; the drawn look is copied, the photo asset and Desktop
 organization (`pinned`, `sectionId`, `sectionName`) are not, and the chat
 stays with the original. Create-from-description (`llm.oneshot`) is not

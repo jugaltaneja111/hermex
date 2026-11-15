@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// The create and duplicate sheet: a live face, the name, an optional role, the
-/// drawn look, the model and the credential choice, plus instructions and the
-/// bundled-skills choice for a new bot or which skills and MCP servers stay on
-/// for a duplicate, then one Create button.
+/// drawn look, the model and the credential choice, plus instructions and, for a new
+/// bot, which bot's setup to copy, if any. A copy chooses which skills, toolsets,
+/// plugins and MCP servers stay on and whether memory comes along; a fresh bot
+/// chooses whether it gets the bundled skills. Then one Create button.
 /// After a partial create the same sheet shows each step's outcome and Try Again.
 @MainActor struct BotCreateView: View {
     @State private var creator: BotCreator
@@ -42,7 +43,7 @@ import SwiftUI
                     } else if !creator.name.isEmpty, !creator.hasStarted {
                         Text(verbatim: creator.name).font(AppFont.caption()).foregroundStyle(.appTertiary).padding(.top, 8)
                     }
-                    if let source = creator.source {
+                    if creator.isDuplicate, let source = creator.source {
                         Text("Copies \(source.name)’s instructions, settings and skills. Its chat stays with the original.")
                             .font(AppFont.caption()).foregroundStyle(.appSecondary).multilineTextAlignment(.center)
                             .padding(.top, 10).padding(.horizontal, 12)
@@ -52,6 +53,7 @@ import SwiftUI
 
                     sectionLabel("Setup")
                     card {
+                        if !creator.isDuplicate, !creator.setupSources.isEmpty { setupSourcePicker }
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Role").font(AppFont.caption()).foregroundStyle(.appSecondary)
                             TextField("What this bot is for (optional)", text: Binding(get: { creator.draft.role }, set: { creator.setRole($0) }), axis: .vertical)
@@ -71,10 +73,13 @@ import SwiftUI
                          ? "The bot signs in with the keys already saved on the host. Nothing is copied to this phone."
                          : "The bot starts with no API keys. Add them in Hermes Desktop before it can answer.")
                         .font(AppFont.caption2()).foregroundStyle(.appTertiary).padding(.horizontal, 12).padding(.top, 7)
+                    if !creator.isDuplicate, let source = creator.source {
+                        caption("Copies \(source.name)’s model, API keys, plugins, tools, skills and MCP servers.")
+                    }
 
-                    // A duplicate copies the source's instructions and skills, so these are new-bot only.
+                    // A duplicate copies the source's instructions, so these are new-bot only.
                     if !creator.isDuplicate { startingPoint.disabled(creator.hasStarted) }
-                    else if !creator.draft.skills.isEmpty || !creator.draft.mcpServers.isEmpty { copiedCapabilities.disabled(creator.hasStarted) }
+                    if creator.source != nil { copiedCapabilities.disabled(creator.hasStarted) }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
@@ -148,8 +153,16 @@ import SwiftUI
                 .accessibilityLabel("Instructions")
                 .padding(12)
         }
-        caption("Leave empty to use the host’s default instructions.")
+        if let source = creator.source {
+            caption("Leave empty to keep \(source.name)’s instructions.")
+        } else {
+            caption("Leave empty to use the host’s default instructions.")
+            bundledSkills
+        }
+    }
 
+    /// A fresh bot's choice of the skills that ship with Hermes.
+    @ViewBuilder private var bundledSkills: some View {
         sectionLabel("Skills")
         card {
             Toggle(isOn: Binding(get: { creator.draft.skipsBundledSkills }, set: { creator.setSkipsBundledSkills($0) })) {
@@ -162,22 +175,40 @@ import SwiftUI
                 : "The bot starts with every skill that ships with Hermes.")
     }
 
-    /// A duplicate's choice of which of the source's skills and MCP servers stay on.
+    /// "Copy Setup From": none for a fresh bot, or one of this Hermes's bots.
+    private var setupSourcePicker: some View {
+        Picker(selection: Binding(get: { creator.source?.id }, set: { id in
+            let profile = creator.setupSources.first { $0.id == id }
+            Task { await creator.setSetupSource(profile) }
+        })) {
+            Text("None").tag(String?.none)
+            ForEach(creator.setupSources) { profile in Text(profile.name).tag(Optional(profile.id)) }
+        } label: {
+            Label("Copy Setup From", systemImage: "square.on.square")
+        }
+        .pickerStyle(.menu)
+        .padding(16)
+    }
+
+    /// A copy's choice of which of the source's capabilities stay on, and of its memory.
     @ViewBuilder private var copiedCapabilities: some View {
         sectionLabel("Capabilities")
         card {
             if !creator.draft.skills.isEmpty { capabilityRow(.skills, systemImage: "sparkles") }
+            if !creator.draft.toolsets.isEmpty { capabilityRow(.toolsets, systemImage: "wrench.and.screwdriver") }
+            if !creator.draft.plugins.isEmpty { capabilityRow(.plugins, systemImage: "puzzlepiece.extension") }
             if !creator.draft.mcpServers.isEmpty { capabilityRow(.mcpServers, systemImage: "server.rack") }
+            if let source = creator.source {
+                Toggle(isOn: Binding(get: { creator.draft.keepsMemory }, set: { creator.setKeepsMemory($0) })) {
+                    Text("Copy \(source.name)’s memory")
+                }
+                .padding(16)
+            }
         }
         caption("Everything is copied. What you turn off here stays off in the new bot.")
     }
 
-    private func items(_ capability: BotCreator.Capability) -> [BotProfileCapability] {
-        switch capability {
-        case .skills: return creator.draft.skills
-        case .mcpServers: return creator.draft.mcpServers
-        }
-    }
+    private func items(_ capability: BotCreator.Capability) -> [BotProfileCapability] { creator.items(capability) }
 
     private func capabilityRow(_ capability: BotCreator.Capability, systemImage: String) -> some View {
         let enabled = items(capability).filter(\.enabled)
