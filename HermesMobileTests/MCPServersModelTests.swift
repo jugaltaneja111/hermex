@@ -7,6 +7,11 @@ import XCTest
     private let record = BotConnection(id: UUID(), name: "Host", address: URL(string: "https://hermes.example")!,
                                        username: "user", password: "secret")
 
+    override func tearDown() {
+        HermesHostFixture.reset()
+        super.tearDown()
+    }
+
     func testAddedServersAndTheRemainingPresetsAreListed() async {
         let model = model(on: host(servers: [server("github", url: "https://mcp.github.example"), server("files", plugin: "desk")],
                                    presets: ["github", "linear"]))

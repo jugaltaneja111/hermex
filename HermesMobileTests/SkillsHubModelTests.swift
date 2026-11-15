@@ -7,6 +7,11 @@ import XCTest
     private let record = BotConnection(id: UUID(), name: "Host", address: URL(string: "https://hermes.example")!,
                                        username: "user", password: "secret")
 
+    override func tearDown() {
+        HermesHostFixture.reset()
+        super.tearDown()
+    }
+
     func testBrowsingAddsEachLaterPageUnderTheFirst() async throws {
         let host = BotSocketHost()
         host.next("skills.manage", .init(result: page([item("pdf"), item("mail")], of: 2)))
