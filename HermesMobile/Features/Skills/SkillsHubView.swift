@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// The skills hub for one Profile on a Hermes host, opened from its Skills page: the hub's
-/// skills page by page, or a search's results, each opening to what the hub knows about it and
-/// one Install. `onInstalled` runs after each install so the Skills page reads its list again.
 struct SkillsHubView: View {
     @State private var model: SkillsHubModel
     private let onInstalled: () -> Void
@@ -21,7 +18,6 @@ struct SkillsHubView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.query, placement: .navigationBarDrawer(displayMode: .always), prompt: Text("Search skills..."))
         .onSubmit(of: .search) { Task { await model.load() } }
-        // Clearing the search goes back to the hub's pages; typing waits for Search.
         .onChange(of: model.query.isEmpty) { _, isEmpty in
             if isEmpty { Task { await model.load() } }
         }
@@ -120,8 +116,6 @@ struct SkillsHubView: View {
     }
 }
 
-/// One hub skill before it is installed: where it comes from, its tags and the start of its
-/// SKILL.md, then Install behind a confirmation that names the Profile it goes to.
 private struct SkillsHubDetailView: View {
     let skill: HermesHubSkill
     let model: SkillsHubModel

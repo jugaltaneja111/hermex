@@ -2,29 +2,20 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// One workspace file. Markdown keeps the chat renderer, with a Source mode in the
-/// actions menu; every other text file draws on the source surface with a gutter,
-/// syntax colour, and an optional starting line. Images keep their own preview;
-/// documents and media open in Quick Look, and archives and other binaries show
-/// No Preview with Export. Every file with a workspace-relative path offers Copy Path.
-/// Its state belongs to one file: callers key it with `.id` on the file they open.
 struct FilePreviewView: View {
-    /// How a Markdown file shows: rendered, or raw on the source surface.
-    private enum MarkdownViewMode: Hashable {
+    private enum RenderedViewMode: Hashable {
         case preview
         case source
     }
 
     let onAPIError: (Error) -> Void
-    /// Forwarded to the source surface's Comment…; nil outside a chat that can take a draft.
     let onAddToPrompt: ((String) -> Void)?
-    /// Forwarded to the source surface's Back to Chat; nil when back navigation does it.
     let onReturnToChat: (() -> Void)?
 
     private let entry: WorkspaceEntry
     private let initialLine: Int?
     @State private var viewModel: FilePreviewViewModel
-    @State private var markdownMode: MarkdownViewMode
+    @State private var renderedMode: RenderedViewMode
     @State private var selectableText: SelectableTextPresentation?
     @State private var exportDocument = ExportedFileDocument(data: Data())
     @State private var exportContentType = UTType.data
@@ -36,9 +27,6 @@ struct FilePreviewView: View {
     @AppStorage(AppHaptics.isEnabledKey) private var isHapticsEnabled = true
     @AppStorage(CodeDisplaySettings.wrapsLinesKey) private var wrapsLines = false
 
-    /// `initialLine` is one-based; the source surface scrolls to it and highlights it,
-    /// so a Markdown file opened at a line starts in Source.
-    /// `prefetchedFile` is a text fetch the file tree already started; the first load reuses it.
     init(
         files: (any WorkspaceFileClient)?,
         entry: WorkspaceEntry,
@@ -53,7 +41,7 @@ struct FilePreviewView: View {
         self.onAPIError = onAPIError
         self.onAddToPrompt = onAddToPrompt
         self.onReturnToChat = onReturnToChat
-        _markdownMode = State(initialValue: initialLine == nil ? .preview : .source)
+        _renderedMode = State(initialValue: initialLine == nil ? .preview : .source)
         _viewModel = State(initialValue: FilePreviewViewModel(
             files: files,
             path: entry.path ?? "",
@@ -93,9 +81,7 @@ struct FilePreviewView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if let preview = viewModel.preview {
-                    fileActionsMenu(for: preview)
-                }
+                fileActionsMenu
 
                 if viewModel.canSaveImageToPhotos {
                     Button {
@@ -174,29 +160,26 @@ struct FilePreviewView: View {
         .transcriptLinks()
     }
 
-    /// The View choice for Markdown, Wrap for source, Copy Path for any file with a
-    /// workspace-relative path, and Copy Contents and Select Text for text. The drawn
-    /// source surface owns long press for line selection, so these live in the toolbar.
     @ViewBuilder
-    private func fileActionsMenu(for preview: FilePreviewContent) -> some View {
-        let content: String? = if case let .text(file) = preview { file.content ?? "" } else { nil }
+    private var fileActionsMenu: some View {
+        let content: String? = if case let .text(file)? = viewModel.preview { file.content ?? "" } else { nil }
         let copyablePath = viewModel.copyablePath
         if content != nil || copyablePath != nil {
             Menu {
-                if content != nil, isMarkdownFile {
-                    Picker("View", selection: $markdownMode) {
+                if content != nil, isRenderedFile {
+                    Picker("View", selection: $renderedMode) {
                         Label(
                             String(localized: "markdown.view.preview", defaultValue: "Preview",
                                    comment: "Markdown View choice: the rendered document, not preview features"),
                             systemImage: "doc.richtext"
                         )
-                        .tag(MarkdownViewMode.preview)
+                        .tag(RenderedViewMode.preview)
                         Label("Source", systemImage: "chevron.left.forwardslash.chevron.right")
-                            .tag(MarkdownViewMode.source)
+                            .tag(RenderedViewMode.source)
                     }
                     .pickerStyle(.inline)
                 }
-                if content != nil, !isMarkdownFile || markdownMode == .source {
+                if content != nil, !isRenderedFile || renderedMode == .source {
                     Toggle("Wrap Lines", systemImage: "text.justify.leading", isOn: $wrapsLines)
                 }
                 if let copyablePath {
@@ -233,8 +216,10 @@ struct FilePreviewView: View {
     @ViewBuilder
     private func previewContent(_ preview: FilePreviewContent) -> some View {
         switch preview {
-        case let .text(file) where isMarkdownFile && markdownMode == .preview:
+        case let .text(file) where isMarkdownFile && renderedMode == .preview:
             markdownContent(file.content ?? "")
+        case let .text(file) where isHTMLFile && renderedMode == .preview:
+            htmlContent(file)
         case let .text(file):
             sourceContent(file)
         case let .image(file):
@@ -242,8 +227,6 @@ struct FilePreviewView: View {
         case let .quickLook(file):
             QuickLookFileView(url: file.url)
         case .audio:
-            // The workspace file browser never produces audio previews; this
-            // arm only keeps the shared `FilePreviewContent` switch exhaustive.
             unavailableContent(String(localized: "Preview is not available for this file type."))
         case let .unavailable(message):
             unavailableContent(message)
@@ -285,9 +268,6 @@ struct FilePreviewView: View {
         .background(Color(.appCanvas))
     }
 
-    /// Small files render as one document. Large ones render the chunks the view
-    /// model split on load in a lazy stack, so opening the file only lays out and
-    /// highlights the chunks near the screen.
     private func markdownContent(_ content: String) -> some View {
         ScrollView {
             if let chunks = viewModel.markdownChunks {
@@ -330,10 +310,24 @@ struct FilePreviewView: View {
         .background(Color(.appCanvas))
     }
 
+    private func htmlContent(_ file: FileResponse) -> some View {
+        let content = file.content ?? ""
+        let fits = !file.isTruncated && content.utf8.count <= BotArtifactBuffer.maximumBytes
+        return HTMLReportSheetPage(html: fits ? content : nil)
+            .id(content)
+    }
+
     private var isMarkdownFile: Bool {
         guard let path = entry.path else { return false }
         return FilePreviewViewModel.isMarkdownPath(path)
     }
+
+    private var isHTMLFile: Bool {
+        guard let path = entry.path else { return false }
+        return FilePreviewViewModel.isHTMLPath(path)
+    }
+
+    private var isRenderedFile: Bool { isMarkdownFile || isHTMLFile }
 
     @ViewBuilder
     private func imageContent(_ data: Data) -> some View {
@@ -383,8 +377,7 @@ struct FilePreviewView: View {
     }
 
     private var displayName: String {
-        let name = entry.name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let name, !name.isEmpty else {
+        guard let name = entry.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return String(localized: "File")
         }
         return name
@@ -398,11 +391,10 @@ struct FilePreviewView: View {
             path = entry.path
         }
 
-        let trimmedPath = path?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let trimmedPath, !trimmedPath.isEmpty else {
+        guard let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return displayName
         }
-        return trimmedPath
+        return path
     }
 
     private var metadataText: String? {

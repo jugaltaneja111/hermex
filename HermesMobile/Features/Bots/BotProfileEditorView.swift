@@ -10,7 +10,6 @@ import SwiftUI
     @State private var showsExpressions = false
     @State private var showsDescribe = false
     @State private var imageError: String?
-    /// What the face should do about the last edit; see `BotCreateView`.
     @State private var cue: BotFaceCue?
     @Environment(\.scenePhase) private var scenePhase
 
@@ -54,8 +53,6 @@ import SwiftUI
         .task { if editor.state == .idle { await editor.load() } }
         .onDisappear { editor.close() }
         .onChange(of: scenePhase) {
-            // Control Center and banners (`.inactive`) keep the connection (#902); only an
-            // editor without one reloads, and never over unsaved edits.
             if scenePhase == .background {
                 editor.suspend()
             } else if scenePhase == .active, !editor.holdsConnection,
@@ -185,7 +182,6 @@ import SwiftUI
         .padding(.top, 26).padding(.bottom, 12)
     }
 
-    /// The Contacts-style badge on the hero avatar: the one place a photo is chosen or removed.
     private var photoMenu: some View {
         Menu {
             Button { showsPhotoPicker = true } label: { Label("Choose Photo", systemImage: "photo.on.rectangle") }
@@ -375,14 +371,11 @@ import SwiftUI
     }
 }
 
-/// One list of a bot's skills, toolsets or MCP servers as on/off rows, for the editor
-/// and the duplicate sheet. It only reports taps: the owner holds the rows.
 struct BotCapabilityPicker<Add: View>: View {
     let title: String
     let items: [BotProfileCapability]
     let setEnabled: (Bool, String) -> Void
     let done: () -> Void
-    /// A row above the list that adds to it, such as the editor's link to add an MCP server.
     let add: Add
 
     init(title: String, items: [BotProfileCapability], setEnabled: @escaping (Bool, String) -> Void,

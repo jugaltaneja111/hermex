@@ -1,14 +1,10 @@
 import Foundation
 
-/// One skill the hub offers. `id` is what an install names it by: the hub's identifier from a
-/// browse, or the name from a search, whose rows carry none and which the host then resolves.
 struct HermesHubSkill: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
     let summary: String
-    /// Where the skill comes from, such as a repository, when the hub says.
     let source: String?
-    /// The hub's trust label for that source, as the host words it.
     let trust: String?
 
     init?(_ row: BotJSON) {
@@ -21,15 +17,12 @@ struct HermesHubSkill: Identifiable, Hashable, Sendable {
     }
 }
 
-/// What the hub knows about one skill before it is installed.
 struct HermesHubSkillInfo: Equatable, Sendable {
     let summary: String?
     let source: String?
     let tags: [String]
-    /// The start of its SKILL.md, the instructions the agent would follow.
     let preview: String?
 
-    /// Nil for the host's `{}`, an identifier the hub resolves nowhere.
     init?(_ info: BotJSON) {
         guard info.fields?.isEmpty == false else { return nil }
         summary = info["description"].text
@@ -39,12 +32,8 @@ struct HermesHubSkillInfo: Equatable, Sendable {
     }
 }
 
-/// A host with no skills hub (-32601, or 4017 for a `skills.manage` without these actions).
 struct HermesSkillsHubUnsupported: Error, Equatable {}
 
-/// The skills hub for one Profile on a Hermes host: `skills.manage`'s browse, search, inspect and
-/// install, over the sign-in and socket the server's Bot screens share. Reads go to the hub the
-/// host is set up with; an install writes that Profile's skills folder and nowhere else.
 @MainActor final class HermesSkillsHubClient {
     let profile: String
     private let http: HermesConnection
@@ -54,7 +43,6 @@ struct HermesSkillsHubUnsupported: Error, Equatable {}
         self.profile = profile
     }
 
-    /// One page of the hub, from 1, and whether a later page exists.
     func browse(page: Int) async throws -> (skills: [HermesHubSkill], hasMore: Bool) {
         let reply = try await gateway { try await $0.call(.skillsHubBrowse(profile: self.profile, page: page)) }
         let skills = (reply["items"].list ?? []).compactMap(HermesHubSkill.init)
@@ -71,8 +59,6 @@ struct HermesSkillsHubUnsupported: Error, Equatable {}
         return HermesHubSkillInfo(reply["info"])
     }
 
-    /// Installs `skill` into the Profile. A refusal carries the host's reason, such as a failed
-    /// security scan; a reply that does not say `installed` is not a success.
     func install(_ skill: HermesHubSkill) async throws {
         let reply = try await gateway { try await $0.call(.skillsHubInstall(profile: self.profile, identifier: skill.id)) }
         guard reply["installed"].flag == true else { throw BotFailure.unsupported }

@@ -3,7 +3,6 @@ import XCTest
 
 @MainActor
 final class UsageReportsTests: XCTestCase {
-    /// Wednesday of 2026-W46, 12:00 UTC.
     private let now = Date(timeIntervalSince1970: 1_794_398_400)
     private let week: TimeInterval = 7 * 24 * 60 * 60
     private let device = UsageDevice(channel: .testflight, appVersion: "1.9.0", osVersion: "26.1",
@@ -62,13 +61,39 @@ final class UsageReportsTests: XCTestCase {
         XCTAssertEqual(report.servers.webui, 1)
     }
 
+    func testOnlyFormatTwoReportsEachServersGateway() throws {
+        servers[0].hermesGateway = .webapp
+        servers.append(Self.server("https://dash.example.org", kind: .hermes, version: "0.21.5"))
+        servers[2].hermesGateway = .dashboard
+        servers.append(Self.server("https://new.example.org", kind: .hermes, version: "0.21.5"))
+        func report(_ version: Int) -> UsageReport {
+            UsageReport(version: version, tallies: UsageTallies(week: UsageWeekID(containing: now)),
+                        firstReportOfMonth: true, installDate: now, device: device, servers: servers,
+                        settings: .init(pushEnabled: false, appLock: false))
+        }
+        XCTAssertEqual(report(2).servers.versions.map(\.gateway), [.webapp, .unknown, .dashboard, .unknown])
+        let formatOne = try XCTUnwrap(JSONSerialization.jsonObject(with: report(1).encoded()) as? [String: Any])
+        let entries = try XCTUnwrap((formatOne["servers"] as? [String: Any])?["versions"] as? [[String: Any]])
+        XCTAssertTrue(entries.allSatisfy { $0["gateway"] == nil })
+    }
+
+    func testOnlyTheReaskPreviewShowsTheNewerFormat() async throws {
+        let defaults = try makeDefaults()
+        defaults.set(1, forKey: UsageReports.Keys.acceptedVersion)
+        let reports = makeReports(defaults: defaults)
+        let accepted = await reports.preview(now: now)
+        let asking = await reports.preview(now: now, asking: true)
+        XCTAssertEqual([accepted.v, asking.v], [1, 2])
+        XCTAssertEqual(reports.consent.acceptedVersion, 1)
+    }
+
     func testPreviewIsTheBodyThatIsSentOnceAfterTheWeekEnds() async throws {
         let defaults = try makeDefaults()
         let reports = makeReports(defaults: defaults)
         reports.allow(now: now)
-        RatingPromptState(defaults: defaults, now: now, usage: reports).recordCompletedResponse()
+        RatingPromptState(defaults: defaults, now: now, usage: reports).recordCompletedResponse(now: now)
         reports.record(.kanban, now: now)
-        SessionListCardState(card: .tip, defaults: defaults).openLinkFromCard(usage: reports)
+        SessionListCardState(card: .tip, defaults: defaults).openLinkFromCard(usage: reports, now: now)
         let preview = await reports.preview(now: now)
 
         await reports.appBecameActive(now: now.addingTimeInterval(week))
@@ -103,7 +128,6 @@ final class UsageReportsTests: XCTestCase {
     func testTurningOffWhileTheReportIsBuiltSendsNothingEvenIfTurnedBackOn() async throws {
         let defaults = try makeDefaults()
         var reports: UsageReports?
-        // Off and straight back on while the report is being built: the erased week stays unsent.
         reports = makeReports(defaults: defaults, device: { @MainActor [device, now, week] in
             reports?.turnOff()
             reports?.allow(now: now.addingTimeInterval(week))
@@ -154,8 +178,6 @@ final class UsageReportsTests: XCTestCase {
         XCTAssertEqual(reports.thisWeek?.star, UsageCardTally(dismissed: true))
     }
 
-    // MARK: - Helpers
-
     private func makeDefaults() throws -> UserDefaults {
         let name = "UsageReportsTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
@@ -177,7 +199,6 @@ final class UsageReportsTests: XCTestCase {
     }
 }
 
-/// Stands in for the collector: records each request's headers and body, then answers 204 or fails.
 private final class UsageReportFixture: URLProtocol {
     struct Request { let headers: [String: String]; let body: Data? }
 
@@ -188,7 +209,6 @@ private final class UsageReportFixture: URLProtocol {
     static var requests: [Request] { lock.withLock { recorded } }
     static func reset() { lock.withLock { recorded = []; fails = false } }
 
-    /// The app's own configuration, with this fixture in front of the network.
     static func configuration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.usageReports
         configuration.protocolClasses = [UsageReportFixture.self]

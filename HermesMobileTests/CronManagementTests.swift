@@ -113,8 +113,6 @@ final class CronManagementModelTests: XCTestCase {
             CronDeliveryOption(value: "telegram", label: "Telegram")
         ]
 
-        // The editor's initial legacy value keeps its custom row even after
-        // the user selects a server option (currentValue moved on).
         let afterSelection = try XCTUnwrap(
             CronDeliverPicker.options(
                 serverOptions: serverOptions,
@@ -125,9 +123,6 @@ final class CronManagementModelTests: XCTestCase {
         XCTAssertEqual(afterSelection.map(\.value), ["local", "telegram", "legacy-target"])
         XCTAssertEqual(afterSelection.map(\.isCustom), [false, false, true])
 
-        // A value typed into the free-text fallback while options were still
-        // loading gets its own row alongside the initial value's row, so the
-        // picker selection always has a matching tag.
         let typedWhileLoading = try XCTUnwrap(
             CronDeliverPicker.options(
                 serverOptions: serverOptions,
@@ -138,7 +133,6 @@ final class CronManagementModelTests: XCTestCase {
         XCTAssertEqual(typedWhileLoading.map(\.value), ["local", "telegram", "typed-target"])
         XCTAssertEqual(typedWhileLoading.map(\.isCustom), [false, false, true])
 
-        // Identical initial and current custom values collapse to one row.
         let sameCustom = try XCTUnwrap(
             CronDeliverPicker.options(
                 serverOptions: serverOptions,
@@ -149,7 +143,6 @@ final class CronManagementModelTests: XCTestCase {
         XCTAssertEqual(sameCustom.map(\.value), ["local", "telegram", "legacy-target"])
         XCTAssertEqual(sameCustom.filter(\.isCustom).count, 1)
 
-        // A blank initial value adds no row.
         let blankInitial = try XCTUnwrap(
             CronDeliverPicker.options(
                 serverOptions: serverOptions,
@@ -274,8 +267,6 @@ final class CronManagementViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.errorMessage)
     }
 
-    // MARK: - Recent runs feed
-
     private static let jobsJSON = #"{"jobs": [{"id": "job-a", "name": "Digest"}, {"id": null, "name": "Backup"}]}"#
 
     @MainActor
@@ -292,8 +283,8 @@ final class CronManagementViewModelTests: XCTestCase {
                 return apiTestJSONResponse("""
                 {
                   "completions": [
-                    {"job_id": "job-a", "name": "Renamed", "status": "ok", "completed_at": 100.5},
-                    {"job_id": "job-gone", "name": "Deleted", "status": "error", "completed_at": 300, "message_count": 1e30},
+                    {"job_id": "job-a", "name": "Renamed", "completed_at": 100.5},
+                    {"job_id": "job-gone", "name": "Deleted", "status": "delivery_failed", "completed_at": 300, "message_count": 1e30},
                     {"job_id": "b-id", "name": "Backup", "status": "ok", "completed_at": "200", "message_count": "4"},
                     {"job_id": "no-time", "name": "Broken", "status": "ok", "completed_at": "soon"}
                   ],
@@ -311,7 +302,7 @@ final class CronManagementViewModelTests: XCTestCase {
         await viewModel.recentRunsTask?.value
 
         XCTAssertEqual(viewModel.recentRuns.map(\.jobId), ["job-gone", "b-id", "job-a"], "Newest first; the entry without a usable time is dropped.")
-        XCTAssertEqual(viewModel.recentRuns.map(\.didFail), [true, false, false])
+        XCTAssertEqual(viewModel.recentRuns.map(\.outcome), [.failed, .completed, .unknown])
         XCTAssertEqual(viewModel.recentRuns.map(\.messageCount), [nil, 4, nil], "Out-of-range and string counts decode without trapping.")
 
         XCTAssertEqual(viewModel.job(for: viewModel.recentRuns[2])?.name, "Digest", "Id wins over a stale name.")
@@ -319,7 +310,6 @@ final class CronManagementViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.job(for: viewModel.recentRuns[0]), "A job missing from the list stays display-only.")
     }
 
-    /// Two refreshes overlap: the read sent last stays on screen, whichever answers first.
     @MainActor
     func testTasksViewModelKeepsTheNewestListReadInEitherArrivalOrder() async throws {
         for olderAnswersFirst in [true, false] {
@@ -468,8 +458,6 @@ final class CronManagementViewModelTests: XCTestCase {
         XCTAssertEqual(updatedJob.jobId, "job123")
     }
 
-    /// webui starts the run and answers at once: the Task shows as running from the answer,
-    /// and nothing follows it (#1041 leaves this as it was).
     @MainActor
     func testTaskDetailViewModelWebuiRunNowShowsTheRunAtOnce() async throws {
         let client = makeClient { request in

@@ -1,16 +1,11 @@
 import SwiftUI
 
-/// A Hermes server's MCP Servers page, opened from its Settings page: the servers one Profile's
-/// config has, each opening to its test, key and removal, then the host's presets and a form
-/// for a server by web address. Keys typed here go to the host's `.env` and are not kept.
 struct MCPServersView: View {
     @State private var model: MCPServersModel
     @State private var showsCustom = false
     @State private var keyed: HermesMCPPreset?
-    /// A refusal from the keys sheet, held until the sheet is gone: an alert can't show under it.
     @State private var heldError: String?
 
-    /// `profile` opens on that Profile, as the bot editor does; nil starts on the host's default.
     init(connection: BotConnection, server: URL, profile: String? = nil) {
         _model = State(initialValue: MCPServersModel(client: HermesMCPClient(saved: connection, server: server), profile: profile))
     }
@@ -148,8 +143,6 @@ struct MCPServersView: View {
     }
 }
 
-/// One server: where it runs, a connection test, its key, and its removal. A server a plugin
-/// provides shows only the test. The page closes when the server leaves the list.
 private struct MCPServerDetailView: View {
     let name: String
     let model: MCPServersModel
@@ -268,12 +261,9 @@ private struct MCPServerDetailView: View {
     }
 }
 
-/// The keys a preset needs before it can connect, one field each, named as the host names them.
-/// A field left empty is skipped: the server is added and can get its key later.
 private struct MCPPresetKeysSheet: View {
     let model: MCPServersModel
     let preset: HermesMCPPreset
-    /// Takes a refusal for the page to show once this sheet has closed.
     let onRefusal: (String) -> Void
 
     @State private var keys: [String: String] = [:]
@@ -305,8 +295,6 @@ private struct MCPPresetKeysSheet: View {
                     Button("Add") {
                         isAdding = true
                         Task {
-                            // The list is read again either way, so the sheet always closes: a
-                            // server added without its key is finished from its own page.
                             if !(await model.add(preset, keys: keys)), let refusal = model.actionError {
                                 model.actionError = nil
                                 onRefusal(refusal)
@@ -322,8 +310,6 @@ private struct MCPPresetKeysSheet: View {
     }
 }
 
-/// A server by web address: a name, its URL and the bearer token it asks for, if any. A command
-/// for the host to run is not offered from the phone.
 private struct MCPCustomServerSheet: View {
     let model: MCPServersModel
 
@@ -331,11 +317,9 @@ private struct MCPCustomServerSheet: View {
     @State private var address = ""
     @State private var token = ""
     @State private var isAdding = false
-    /// The host's refusal, shown here: the page's alert can't show under this sheet.
     @State private var refusal: String?
     @Environment(\.dismiss) private var dismiss
 
-    /// The address as a web URL, or nil while it isn't one.
     private var url: URL? {
         guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host?.isEmpty == false else { return nil }
@@ -385,7 +369,6 @@ private struct MCPCustomServerSheet: View {
                         guard let url else { return }
                         isAdding = true
                         Task {
-                            // A refusal stays on the sheet, so nothing is retyped.
                             refusal = nil
                             if await model.add(name: name, url: url, token: token) {
                                 dismiss()

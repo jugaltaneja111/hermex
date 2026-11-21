@@ -1,8 +1,6 @@
 import XCTest
 @testable import HermesMobile
 
-/// The MCP Servers screen on a Hermes host: `MCPServersModel` and the real client over a scripted
-/// socket, with the fields `mcp.catalog` and `mcp.servers.*` answer at the pin (3b421578).
 @MainActor final class MCPServersModelTests: XCTestCase {
     private let record = BotConnection(id: UUID(), name: "Host", address: URL(string: "https://hermes.example")!,
                                        username: "user", password: "secret")
@@ -102,8 +100,6 @@ import XCTest
         XCTAssertEqual(remove["name"].text, "github"); XCTAssertEqual(remove["profile"].text, "default")
         XCTAssertNil(model.server("github"))
     }
-
-    // MARK: - Helpers
 
     private var profiles: BotJSON {
         .object(["profiles": .array([

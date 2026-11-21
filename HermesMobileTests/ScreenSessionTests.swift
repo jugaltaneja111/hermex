@@ -3,7 +3,6 @@ import Observation
 import XCTest
 @testable import HermesMobile
 
-/// The Screen's states and control rules over a scripted gateway and stream socket.
 @MainActor final class ScreenSessionTests: XCTestCase {
     private let host = BotSocketHost()
     private let server = URL(string: "https://hermes.example")!
@@ -41,7 +40,6 @@ import XCTest
         ])
     }
 
-    /// A host whose screen runs, minting `viewer` and reporting `lease`.
     private func standUp(viewer: String = "viewer-1", lease: BotJSON? = nil) {
         host.always("display.status", .init(result: screen(viewer: viewer, lease: lease)))
         host.always("display.observe", .init(result: screen(viewer: viewer, lease: lease)))
@@ -68,11 +66,14 @@ import XCTest
     }
 
     private func socket(_ index: Int) async -> ScriptedRFBSocket {
-        await waitUntil("stream \(index) opened") { [opened] in opened.sockets.count > index }
+        while opened.sockets.count <= index {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                withObservationTracking { _ = opened.sockets.count } onChange: { continuation.resume() }
+            }
+        }
         return sockets[index]
     }
 
-    /// Streams a frame, then takes over as `viewer`.
     private func holding(viewer: String = "viewer-1", configure: (inout ScreenSession.Options) -> Void = { _ in }) async -> ScreenSession {
         standUp(viewer: viewer)
         host.always("display.lease.acquire", .init(result: .object(["lease": lease(holder: "human", viewer: viewer)])))
@@ -84,8 +85,6 @@ import XCTest
         await reach(.mine, on: session)
         return session
     }
-
-    // MARK: - Watching
 
     func testARunningScreenStreamsOnATicketAndPutsFramesOnTheStore() async throws {
         standUp()
@@ -121,7 +120,6 @@ import XCTest
         lacking.leave()
     }
 
-    /// 5300 with no `data.code` is a state: the screen stopped between the two calls.
     func testObserveRefusedWithNoCodeReadsAsAStoppedScreen() async {
         host.always("display.status", .init(result: screen()))
         host.always("display.observe", .init(error: 5300))
@@ -136,7 +134,6 @@ import XCTest
         let session = makeSession(backoff: [.seconds(3600)])
         session.open()
         await socket(0).end(code: 4401)
-        // No wait: a backoff of an hour would stall this.
         await socket(1).serve(ScriptedRFBSocket.oneFrame)
         await reach(.live, on: session)
         session.leave()
@@ -157,7 +154,6 @@ import XCTest
         broken.leave()
     }
 
-    /// The last picture stays, dimmed by the view, until the retry's first frame.
     func testADroppedStreamRetriesAndKeepsThePicture() async throws {
         standUp()
         let session = makeSession(backoff: [.milliseconds(1)])
@@ -173,7 +169,6 @@ import XCTest
         session.leave()
     }
 
-    /// A proxy that refuses the upgrade won't start accepting it on its own.
     func testARefusedUpgradeStopsRetrying() async {
         standUp()
         let session = makeSession()
@@ -183,7 +178,6 @@ import XCTest
         session.leave()
     }
 
-    /// A dead route can leave a read waiting forever, so a ping with no pong must end the stream.
     func testAPingThatFailsEndsAStreamWhoseReadIsParked() async {
         let socket = ScriptedRFBSocket()
         socket.pingFailure = URLError(.networkConnectionLost)
@@ -198,9 +192,6 @@ import XCTest
         }
     }
 
-    // MARK: - Start and stop
-
-    /// `Start Screen`, then the stream, with the status re-read in between.
     func testStartingAStoppedScreenStreamsIt() async throws {
         host.next("display.status", .init(result: screen(running: false)))
         host.always("display.status", .init(result: screen()))
@@ -216,7 +207,6 @@ import XCTest
         session.leave()
     }
 
-    /// Control Center comes back without having interrupted anything, so a Start carries on.
     func testReturningToTheForegroundDoesNotInterruptAStart() async throws {
         host.next("display.status", .init(result: screen(running: false)))
         host.always("display.status", .init(result: screen()))
@@ -235,7 +225,6 @@ import XCTest
         session.leave()
     }
 
-    /// A refused start says why in the host's words, in place of Start.
     func testARefusedStartShowsTheHostsReason() async {
         host.always("display.status", .init(result: screen(running: false)))
         host.always("display.start", .init(error: 5300, message: "Not enough free memory for a desktop"))
@@ -247,8 +236,6 @@ import XCTest
         session.leave()
     }
 
-    /// A sandbox short of its image reports a blocker as well as missing packages, and installing
-    /// on the host wouldn't help, so the blocker wins.
     func testAScreenThatCantStartShowsItsBlockerThenItsMissingPackages() {
         let both = ScreenStatus(.object(["supported": .bool(true), "installed": .bool(false), "running": .bool(false),
                                          "blocker": .string("The sandbox lacks Xvnc"), "install_command": .string("sudo apt-get install")]))
@@ -258,7 +245,6 @@ import XCTest
         XCTAssertEqual(missing.settledPhase, .needsPackages(command: "sudo apt-get install"))
     }
 
-    /// Force only when someone else holds it: the host refuses a plain stop then.
     func testStoppingAScreenAsksForForceOnlyOverAnotherPerson() async throws {
         standUp()
         host.always("display.stop", .init(result: screen(running: false)))
@@ -278,7 +264,6 @@ import XCTest
         session.leave()
     }
 
-    /// A stop the host refused says so, and a retry that works clears that.
     func testARefusedStopReportsItAndARetryClearsIt() async {
         standUp()
         let session = makeSession()
@@ -298,7 +283,6 @@ import XCTest
         session.leave()
     }
 
-    /// Stopping a screen ends its lease, so a hold from before that is over, and says so.
     func testAScreenStoppedElsewhereEndsTheHold() async {
         let session = await holding()
         host.always("display.status", .init(result: screen(running: false)))
@@ -311,8 +295,6 @@ import XCTest
         session.leave()
     }
 
-    // MARK: - Control
-
     func testTakeOverAcquiresWithTheMintedIDAndSavesIt() async throws {
         let session = await holding()
         let acquire = try XCTUnwrap(requests("display.lease.acquire").first)
@@ -322,7 +304,6 @@ import XCTest
         session.suspend()
     }
 
-    /// A chat's Take Over (#1632) opens the Screen and takes control at its first frame.
     func testTakingOverWhenLiveAcquiresAtTheFirstFrame() async {
         standUp()
         host.always("display.lease.acquire", .init(result: .object(["lease": lease(holder: "human", viewer: "viewer-1")])))
@@ -336,8 +317,6 @@ import XCTest
         session.suspend()
     }
 
-    /// Switching apps keeps control: nothing releases, and the return moves the hold to the new
-    /// socket's id with no prompt.
     func testReturningFromTheBackgroundTakesTheHoldBackUnderTheNewID() async throws {
         let session = await holding()
         session.suspend()
@@ -356,7 +335,6 @@ import XCTest
         session.suspend()
     }
 
-    /// A hash that isn't ours means someone else took over meanwhile: no acquire, so no eviction.
     func testReturningToSomeoneElsesTakeoverWatchesWithoutTakingItBack() async {
         let session = await holding()
         session.suspend()
@@ -372,8 +350,6 @@ import XCTest
         session.leave()
     }
 
-    /// The release names the saved id, even from a connection that didn't mint it. The host then
-    /// answers for that holder only, so someone else's takeover can't be revoked.
     func testHandBackReleasesTheSavedIDAndCountsOnlyWhenTheAgentHolds() async throws {
         let session = await holding()
         host.next("display.lease.release", .init(result: .object(["lease": lease(holder: "human", viewer: "viewer-1")])))
@@ -393,7 +369,6 @@ import XCTest
         session.leave()
     }
 
-    /// The host's event can beat its reply, and a hand-back the user asked for isn't news to them.
     func testOwnHandBacksLeaseEventRaisesNoNotice() async throws {
         let session = await holding()
         let event: BotJSON = .object(["method": .string("event"), "params": .object([
@@ -419,7 +394,6 @@ import XCTest
         await fulfillment(of: [released], timeout: 5)
     }
 
-    /// The host may have granted a Take Over whose reply hasn't come, so closing must still release it.
     func testClosingBeforeTheAcquireReplyStillHandsBack() async throws {
         standUp()
         host.withhold("display.lease.acquire")
@@ -440,7 +414,6 @@ import XCTest
         XCTAssertEqual(requests("display.lease.release").last?["params"]["viewer_id"].text, "viewer-1")
     }
 
-    /// Last Take Over wins: code 4000 drops this viewer to watching, on a new ticket.
     func testAnotherPersonTakingOverDropsThisViewerToWatching() async {
         let session = await holding()
         standUp(viewer: "viewer-1", lease: lease(holder: "human", viewer: "someone-else"))
@@ -470,7 +443,6 @@ import XCTest
         session.leave()
     }
 
-    /// `display.lease` reaches every attached screen, so only this screen's key may move control.
     func testALeaseEventForAnotherProfileChangesNothing() async {
         let session = await holding()
         session.handle(.object(["type": .string("display.lease"), "payload": .object([
@@ -486,11 +458,8 @@ import XCTest
         session.leave()
     }
 
-    // MARK: - The host's desktop
-
     private let plugin = "/api/plugins/hermex-screen"
 
-    /// A session on a host with no stock screen, whose plugin routes `rest` answers.
     private func makeHostSession(removesFromItsProfile: Bool = false, rest: @escaping (URLRequest) -> HermesHostFixture.Reply?) -> ScreenSession {
         host.always("display.status", .init(result: screen(supported: false)))
         let record = BotConnection(id: UUID(), name: "Host", address: server, username: "u", password: "p")
@@ -529,7 +498,6 @@ import XCTest
         return (try? JSONDecoder().decode(BotJSON.self, from: data)) ?? .null
     }
 
-    /// A plugin that serves every route, recording what the app sent.
     private func livePlugin(_ overrides: @escaping (String) -> HermesHostFixture.Reply? = { _ in nil },
                             sent: @escaping (String, BotJSON) -> Void = { _, _ in }) -> (URLRequest) -> HermesHostFixture.Reply? {
         { [plugin, unowned self] request in
@@ -585,7 +553,6 @@ import XCTest
         session.leave()
     }
 
-    /// Nothing changes on the host until the tap, and the install names the pinned commit.
     func testInstallingThePluginIsPinnedAndWaitsForTheTap() async throws {
         var installed: BotJSON?
         var mounted = false
@@ -617,8 +584,6 @@ import XCTest
         session.leave()
     }
 
-    /// A hot-mount can be in flight, so one read isn't enough to offer a restart; and never on a
-    /// gateway's Webapp, whose drain hermex-push's restart skips (#1606).
     func testARestartIsOfferedOnlyIfASecondReadStillSaysSoAndOnlyWithARoute() async {
         for webapp in [false, true] {
             var reads = 0, statuses = 0
@@ -629,7 +594,6 @@ import XCTest
                     return .json(404, .object(["detail": .string("No such API endpoint: /x")]))
                 case "/api/plugins/hermex-push/capabilities"?:
                     return .json(200, .object(["routes": .array([.string("POST /restart")])]))
-                // The Webapp names its install only once signed in.
                 case "/api/status"? where webapp:
                     statuses += 1
                     return .json(200, .object(statuses == 1 ? ["auth_required": .bool(true), "auth_providers": .array([.string("basic")])]
@@ -667,8 +631,6 @@ import XCTest
         XCTAssertEqual(refused, .hostRefused("Windows isn't supported yet."))
     }
 
-    /// A takeover left by a plugin that has gone still holds every Profile's stock lease, so the
-    /// force Hand Back clears them there.
     func testForceWithThePluginGoneClearsEveryProfilesStockLease() async throws {
         host.always("profiles.list", .init(result: .object(["profiles": .array([
             .object(["name": .string("work")]), .object(["name": .string("home")])
@@ -691,7 +653,6 @@ import XCTest
         session.leave()
     }
 
-    /// Hermes runs no plugin code on removal, so a hold has to end first.
     func testRemovingThePluginReleasesAnyHoldFirst() async throws {
         var order: [String] = []
         let deleted = expectation(description: "the plugin is deleted")
@@ -718,7 +679,6 @@ import XCTest
         session.leave()
     }
 
-    /// The Plugins screen names a Profile, and the REST route acts on the dashboard's instead (#1582).
     func testRemovingFromThePluginsScreenNamesItsProfile() async throws {
         host.always("plugins.manage", .init(result: .object(["ok": .bool(true), "name": .string(HermexScreenPlugin.name)])))
         let removed = expectation(description: "the removal reached the host")
@@ -737,8 +697,6 @@ import XCTest
         session.leave()
     }
 
-    /// The removal menu only shows with nobody holding, since a takeover on a removed plugin has
-    /// nothing left to end it.
     func testThePluginCanBeRemovedOnlyWithNoTakeoverOnIt() async {
         var lease = self.lease()
         let session = makeHostSession(rest: livePlugin({ [unowned self] route in
@@ -756,7 +714,6 @@ import XCTest
         session.leave()
     }
 
-    /// Someone can take over while the confirmation is open, which would strand their takeover.
     func testRemovingRechecksForATakeoverBeforeDeleting() async {
         var deleted = false
         var held = false
@@ -776,8 +733,6 @@ import XCTest
         session.leave()
     }
 
-    /// A host's calls go by HTTP, so a release sent ahead of a slow acquire would finish first and
-    /// leave the acquire to pause every bot with nobody watching.
     func testClosingOnAHostWaitsForATakeOverStillOnItsWay() async {
         var order: [String] = []
         let acquiring = expectation(description: "the acquire reached the host")
@@ -807,7 +762,6 @@ import XCTest
         XCTAssertEqual(order, ["acquire", "release"])
     }
 
-    /// The store is shared, so a Screen reopened while this one closed may hold the screen by now.
     func testClosingReleasesOnlyWhatThisViewTook() async {
         var released: [String?] = []
         let acquiring = expectation(description: "the acquire reached the host")
@@ -839,7 +793,6 @@ import XCTest
         }
     }
 
-    /// A reply arriving after a hand-back can't bring back the hold it replaced.
     func testALateAcquireReplyDoesntRestoreAForgottenHold() async {
         let acquiring = expectation(description: "the acquire reached the host")
         let session = makeHostSession(rest: livePlugin({ route in
@@ -860,8 +813,6 @@ import XCTest
         session.suspend()
     }
 
-    /// A blocked state still needs its way out: a hold of this iPhone's shows Hand Back, and
-    /// anyone else's shows the force.
     func testABlockedHostStateStillReportsWhoHoldsIt() async {
         let blocked: [String: BotJSON] = ["driver": .object(["problem": .string("no click tool")]),
                                           "lease": lease(holder: "human", viewer: "mine")]
@@ -884,7 +835,6 @@ import XCTest
         other.leave()
     }
 
-    /// The plugin counts only input it receives, so Keep Control has to reach it.
     func testKeepControlRenewsThePluginsTimerAsWellAsThePhones() async throws {
         let session = makeHostSession(rest: livePlugin())
         session.open()
@@ -900,7 +850,6 @@ import XCTest
         session.leave()
     }
 
-    /// A saved host hold whose plugin has gone still ends, on each Profile's stock lease, by its id.
     func testAHoldOutlivingThePluginHandsBackThroughStockLeases() async throws {
         host.always("profiles.list", .init(result: .object(["profiles": .array([
             .object(["name": .string("work")]), .object(["name": .string("home")])
@@ -919,7 +868,6 @@ import XCTest
         client.close()
     }
 
-    /// A lock can come and go while the stream runs, and on Windows it decides whether Take Over shows.
     func testALockOrUnlockDuringAStreamIsNoticed() async {
         var locked = true
         let record = BotConnection(id: UUID(), name: "Host", address: server, username: "u", password: "p")
@@ -945,7 +893,6 @@ import XCTest
         session.leave()
     }
 
-    /// A restart drops the gateway with it, and the read that follows finds the routes mounted.
     func testRestartingForThePluginEndsLiveOnceTheRoutesAreMounted() async {
         var restarted = false
         let session = makeHostSession { [plugin, unowned self] request in
@@ -983,7 +930,6 @@ import XCTest
         session.leave()
     }
 
-    /// The plugin refused, so the hold saved ahead of the call never landed.
     func testARefusedTakeOverLeavesNoHold() async {
         let session = makeHostSession(rest: livePlugin({ route in
             route == "/lease/acquire" ? .json(409, .object(["detail": .string("viewer_id was not minted"), "code": .string("viewer_mismatch")])) : nil
@@ -997,7 +943,6 @@ import XCTest
         session.leave()
     }
 
-    /// The plugin's own timer runs with or without the phone, and closes with its own code.
     func testThePluginsTimerEndingATakeoverSaysSo() async {
         let session = makeHostSession(rest: livePlugin())
         session.open()
@@ -1012,7 +957,6 @@ import XCTest
         session.leave()
     }
 
-    /// A host's desktop has no stopped state, so a capture failure re-reads what's wrong.
     func testAStreamEndingOnAHostReadsItsStateAgain() async {
         var failing = false
         let session = makeHostSession(rest: livePlugin({ [unowned self] route in
@@ -1027,9 +971,6 @@ import XCTest
         session.leave()
     }
 
-    /// A plugin whose capture keeps failing with no reason in its status would otherwise show
-    /// "Reconnecting" forever. Two failures in a row before a frame settle; a frame, or Check
-    /// Again, starts the count over.
     func testAHostThatKeepsFailingToCaptureSaysSoInsteadOfRetryingForever() async {
         let session = makeHostSession(rest: livePlugin())
         session.open()
@@ -1048,8 +989,6 @@ import XCTest
         session.leave()
     }
 
-    // MARK: - Idle
-
     func testIdleAsksThenHandsBackAndInputPutsItOff() async {
         let session = await holding { options in
             options.idlePrompt = .milliseconds(20)
@@ -1066,7 +1005,6 @@ import XCTest
         session.leave()
     }
 
-    /// A stock lease never expires, so one failed hand-back at the limit can't be the last try.
     func testAHandBackAtTheLimitThatFailsTriesAgain() async {
         let session = await holding { options in
             options.idlePrompt = .milliseconds(1)
@@ -1083,7 +1021,6 @@ import XCTest
         session.leave()
     }
 
-    /// A stock lease never expires, so a return past the limit hands back rather than retaking it.
     func testReturningPastTheLimitHandsBackInsteadOfTakingItBack() async {
         let session = await holding()
         session.suspend()
@@ -1102,7 +1039,6 @@ import XCTest
         session.leave()
     }
 
-    /// Recent input counts on a reconnect, though the saved time moves only on leaving the foreground.
     func testAReconnectAfterRecentInputKeepsControlPastTheOriginalDeadline() async {
         let session = await holding()
         clock.addTimeInterval(14 * 60)
@@ -1119,8 +1055,6 @@ import XCTest
         session.suspend()
     }
 
-    /// The host can take the lease while the reply dies with a suspended app. The saved hold is
-    /// what lets the return resume it rather than call it someone else's.
     func testSuspendingBeforeTheAcquireReplyStillResumesTheTakeover() async {
         standUp()
         host.withhold("display.lease.acquire")
@@ -1145,7 +1079,6 @@ import XCTest
         session.suspend()
     }
 
-    /// An acquire that never landed isn't someone else's takeover.
     func testAnUnconfirmedHoldTheHostDoesntShowGoesQuietly() async {
         holds.save(ScreenHold(viewerIDs: ["never-landed"], isConfirmed: false, lastInput: clock, source: .botDesktop), server: server, profile: "work")
         standUp()
@@ -1159,7 +1092,6 @@ import XCTest
         session.leave()
     }
 
-    /// The host's filter reads the first 14 client bytes as the handshake.
     func testInputDuringAReconnectIsDroppedUntilTheNewStreamsHandshakeIsDone() async {
         let session = await holding()
         standUp(viewer: "viewer-2", lease: lease(holder: "human", viewer: "viewer-1"))
@@ -1202,7 +1134,6 @@ import XCTest
         client.close()
     }
 
-    /// A reply about an old hold must not erase one retaken since.
     func testForgettingAnOldHoldLeavesANewerOne() {
         holds.save(ScreenHold(viewerIDs: ["new"], isConfirmed: true, lastInput: clock, source: .botDesktop), server: server, profile: "work")
         holds.forget(viewerIDs: ["old"], server: server, profile: "work")
@@ -1216,8 +1147,6 @@ import XCTest
         holds.removeAll(server: other)
         XCTAssertNotNil(holds.hold(server: server, profile: "work"))
     }
-
-    // MARK: - Input
 
     func testInputOnlyGoesOutWhileHoldingAndModifiersWrapTheNextKey() async throws {
         standUp()
@@ -1251,7 +1180,6 @@ import XCTest
         session.leave()
     }
 
-    /// A fast finger falls behind by one position, not by a queue, and a click keeps its place.
     func testPointerMovesCoalesceButClicksKeepTheirPlace() {
         var queue = ScreenInputQueue()
         queue.movePointer(x: 1, y: 1, buttons: 0)
@@ -1280,9 +1208,6 @@ import XCTest
         XCTAssertEqual(edge.y, 0)
     }
 
-    /// ⌘⇧S follows the chat on screen (#1633): a chat popping back into view before the pushed one
-    /// leaves keeps its own Screen, one with no Screen to open keeps the Bots home's out, and the
-    /// last chat to leave hands ⌘⇧S back.
     func testTheScreenShortcutStaysWithTheChatOnScreen() {
         let shortcut = ScreenShortcut()
         let (list, pushed) = (UUID(), UUID())
@@ -1305,7 +1230,6 @@ import XCTest
     }
 }
 
-/// The stream sockets a session opened, which a test can wait on.
 @MainActor @Observable private final class OpenedStreams {
     private(set) var sockets: [ScriptedRFBSocket] = []
     private(set) var upgrades: [URLRequest] = []
@@ -1316,7 +1240,6 @@ import XCTest
     }
 }
 
-/// A stream socket scripted by the test, which answers each read in order.
 private actor ScriptedRFBSocketState {
     var frames: [Result<Data, Error>] = []
     var waiter: CheckedContinuation<Data, Error>?
@@ -1351,10 +1274,8 @@ final class ScriptedRFBSocket: RFBSocket, @unchecked Sendable {
     private var sendWaiters: [(expectation: XCTestExpectation, matches: (Data) -> Bool)] = []
     var pingFailure: Error?
 
-    /// Everything the client sent, a frame each.
     var sentBytes: [Data] { lock.withLock { sent } }
 
-    /// The handshake, then one 2x1 update of a Tight fill.
     static let oneFrame: Data = {
         var bytes = Array("RFB 003.008\n".utf8) + [1, 1, 0, 0, 0, 0]
         bytes += [0, 2, 0, 1, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -1378,7 +1299,6 @@ final class ScriptedRFBSocket: RFBSocket, @unchecked Sendable {
         }
     }
 
-    /// Fulfills `expectation` when a later frame the client sends matches.
     func fulfill(_ expectation: XCTestExpectation, when matches: @escaping (Data) -> Bool) {
         lock.withLock { sendWaiters.append((expectation, matches)) }
     }

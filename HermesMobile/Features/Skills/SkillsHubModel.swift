@@ -1,29 +1,22 @@
 import Foundation
 import Observation
 
-/// The skills hub screen's state for one Profile: the hub's pages or one search's results, and
-/// the install in flight. Nothing is kept past the screen.
 @MainActor
 @Observable
 final class SkillsHubModel {
     enum State: Equatable {
         case loading
         case loaded
-        /// The host has no skills hub: it is older than this screen needs.
         case unsupported
         case failed(String)
     }
 
     private(set) var state = State.loading
     private(set) var skills: [HermesHubSkill] = []
-    /// A later page of the hub exists. Never true for search results, which come whole.
     private(set) var hasMore = false
     private(set) var isLoadingMore = false
-    /// The skill being installed. One at a time.
     private(set) var installing: String?
-    /// The skills this screen installed, by id, so their rows say so.
     private(set) var installed: Set<String> = []
-    /// The last install's refusal, in the host's words, for the screen's alert.
     var actionError: String?
     var query = ""
 
@@ -31,12 +24,10 @@ final class SkillsHubModel {
 
     private let client: HermesSkillsHubClient
     private var page = 1
-    /// Bumped by each list read, so a slow page never lands on a newer search.
     @ObservationIgnored private var readSerial = 0
 
     init(client: HermesSkillsHubClient) { self.client = client }
 
-    /// The hub's first page, or the search's results while there is search text.
     func load() async {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         readSerial += 1
@@ -60,7 +51,6 @@ final class SkillsHubModel {
         }
     }
 
-    /// The hub's next page, added under the rows shown. A failure keeps what is shown.
     func loadMore() async {
         guard hasMore, !isLoadingMore, state == .loaded else { return }
         isLoadingMore = true
@@ -76,8 +66,6 @@ final class SkillsHubModel {
         try? await client.inspect(skill)
     }
 
-    /// Installs `skill` into the Profile. True once the host says it is installed; a lost reply
-    /// is reported and never sent again.
     @discardableResult
     func install(_ skill: HermesHubSkill) async -> Bool {
         guard installing == nil else { return false }

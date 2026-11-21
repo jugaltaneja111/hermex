@@ -1,8 +1,6 @@
 import XCTest
 @testable import HermesMobile
 
-/// The skills hub on a Hermes host: `SkillsHubModel` and the real client over a scripted socket,
-/// with the fields `skills.manage` answers at the pin (3b421578).
 @MainActor final class SkillsHubModelTests: XCTestCase {
     private let record = BotConnection(id: UUID(), name: "Host", address: URL(string: "https://hermes.example")!,
                                        username: "user", password: "secret")
@@ -84,8 +82,6 @@ import XCTest
 
         XCTAssertEqual(model.state, .unsupported)
     }
-
-    // MARK: - Helpers
 
     private func item(_ name: String) -> BotJSON {
         .object(["name": .string(name), "description": .string("What \(name) does"), "source": .string("github"),
