@@ -25,3 +25,9 @@ Lives in: `HermesMobile/Features/Chat/TalkMode.swift`
 `sendDraftMessage` returns before the reply finishes. Talk advances when `activeStreamID` goes back to nil. A send that returns with no stream running, such as a reply that already finished, advances at once. A send that leaves the draft in the composer counts as not sent. Talk ends when the chat leaves the screen or the app leaves the foreground, because recording stops in the background.
 
 Lives in: `HermesMobile/Features/Chat/ChatView.swift`, `HermesMobile/Features/Chat/TalkMode.swift`
+
+## Talk lives in the composer, not the toolbar
+
+Talk takes the send button's place while the composer is empty and nothing runs. A Talk button beside Chat settings in a bot chat's toolbar did not fit next to the bot pill on iOS 26: the system folded the trailing item into a "…" overflow button. Because that item is one custom view holding two buttons, the overflow menu had nothing in it, and Chat settings could no longer be reached.
+
+Lives in: `HermesMobile/Features/Chat/ChatComposerView.swift`

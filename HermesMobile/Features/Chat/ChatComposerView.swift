@@ -258,6 +258,7 @@ struct MessageComposerView: View {
     var uploadsAttachmentsOnSend = false
     var onCancelAttachmentUpload: (() -> Void)?
     var hermesTranscriber: ComposerTranscriber?
+    var onStartTalk: (() -> Void)? = nil
 
     @State private var textFieldHeight: CGFloat = 0
     @State private var textInputHeight: CGFloat = 22
@@ -888,7 +889,7 @@ struct MessageComposerView: View {
 
                     voiceControlButton
 
-                    actionButton
+                    sendOrTalkButton
                 }
             }
             .padding(.horizontal, isExpanded ? 0 : pillInset)
@@ -911,7 +912,7 @@ struct MessageComposerView: View {
 
             voiceControlButton
 
-            actionButton
+            sendOrTalkButton
         }
     }
 
@@ -1006,6 +1007,35 @@ struct MessageComposerView: View {
                 finishVoiceNote(translationHeight: height)
             }
         )
+    }
+
+    @ViewBuilder
+    private var sendOrTalkButton: some View {
+        if let onStartTalk, showsTalkButton {
+            Button(action: onStartTalk) {
+                Image(systemName: "waveform")
+                    .font(.system(size: actionIconSize, weight: .semibold))
+                    .frame(width: circleSize, height: circleSize)
+                    .background(talkAppearance.background)
+                    .foregroundStyle(talkAppearance.foreground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.chatTactile(.icon))
+            .accessibilityLabel(Text("Talk"))
+        } else {
+            actionButton
+        }
+    }
+
+    private var talkAppearance: (background: Color, foreground: Color) {
+        let appearance = actionAppearance(isStop: false, isDisabled: false)
+        return (appearance.background, appearance.foreground)
+    }
+
+    private var showsTalkButton: Bool {
+        !isReadOnly && !showsStopButton && !isSending && !isUploadingAttachment && !isSendingVoiceNote
+            && trimmedDraftMessage.isEmpty && quotes.isEmpty && pendingAttachments.isEmpty
+            && !voiceInput.isListening && !voiceInput.isRequestingPermission && !voiceNoteRecorder.isRecording
     }
 
     private var actionButton: some View {

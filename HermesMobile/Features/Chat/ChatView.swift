@@ -730,7 +730,8 @@ struct ChatView: View {
             showsNewChatControls: showsNewChatControls,
             uploadsAttachmentsOnSend: isHermesSession,
             onCancelAttachmentUpload: viewModel.isSendingAttachments ? { viewModel.cancelAttachmentUpload() } : nil,
-            hermesTranscriber: hermesTranscriber
+            hermesTranscriber: hermesTranscriber,
+            onStartTalk: showsTalkButton && !talk.isActive ? startTalk : nil
         )
         .environment(\.layoutDirection, chatLayoutDirection)
         .background(
@@ -1170,7 +1171,6 @@ struct ChatView: View {
                     if showsTrailingActions {
                         ToolbarItem(placement: .topBarTrailing) {
                             ChatToolbarActionCluster {
-                                if showsTalkButton { ChatToolbarActionSlot { talkButton } }
                                 if showsBotChatSettingsButton { ChatToolbarActionSlot { botChatSettingsButton } }
                                 if viewModel.showsGoalControls { ChatToolbarActionSlot { goalControlMenu } }
                                 if showsFilesLink { ChatToolbarActionSlot { filesLink } }
@@ -2074,15 +2074,6 @@ struct ChatView: View {
         isHermesSession && hermesTranscriber != nil && !viewModel.isViewingCachedData
     }
 
-    private var talkButton: some View {
-        Button(action: startTalk) {
-            Label("Talk", systemImage: "waveform")
-        }
-        .disabled(talk.isActive || viewModel.activeStreamID != nil
-                  || !draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        .accessibilityLabel("Talk")
-    }
-
     @ViewBuilder
     private var talkOverlay: some View {
         if talk.isActive {
@@ -2115,7 +2106,7 @@ struct ChatView: View {
     }
 
     private var showsTrailingActions: Bool {
-        showsTalkButton || showsBotChatSettingsButton || viewModel.showsGoalControls || showsFilesLink || showsGitMenu
+        showsBotChatSettingsButton || viewModel.showsGoalControls || showsFilesLink || showsGitMenu
             || screenShortcut != nil
     }
 
@@ -2144,9 +2135,6 @@ struct ChatView: View {
     @available(iOS 27.1, *)
     @ToolbarContentBuilder
     private var chatActionRailItems: some ToolbarContent {
-        if showsTalkButton {
-            ToolbarItem(placement: .topBarTrailing) { talkButton }
-        }
         if showsBotChatSettingsButton {
             ToolbarItem(placement: .topBarTrailing) { botChatSettingsButton }
         }
