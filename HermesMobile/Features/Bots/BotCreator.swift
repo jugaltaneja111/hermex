@@ -1,9 +1,6 @@
 import Foundation
 import Observation
 
-/// Hermes Profile names as the host validates them: `[a-z0-9][a-z0-9_-]{0,63}`,
-/// never `default` or another reserved word. The slug is derived from the display
-/// name the user types, so the roster title and the folder name stay related.
 enum BotProfileName {
     static let reserved: Set<String> = ["hermes", "default", "test", "tmp", "root", "sudo"]
 
@@ -28,19 +25,15 @@ enum BotProfileName {
     }
 }
 
-/// One bot creation or duplication for one connection. Setup is three host writes
-/// in order: the Profile (`profiles.create`), its look (`profiles.configure`) and
-/// its canonical "Bot Chat" (`session.create` + `session.title`). Each step records
-/// its own outcome; Try Again repeats only the steps that are not done, and a
-/// step whose reply was lost re-reads the host before writing again, so a retry
-/// never mints a second Profile or a second chat.
 @MainActor @Observable final class BotCreator {
     enum Step: CaseIterable, Identifiable {
-        case profile, look, chat
+        case profile, capabilities, memory, look, chat
         var id: Self { self }
         var title: String {
             switch self {
             case .profile: return String(localized: "Profile")
+            case .capabilities: return String(localized: "Capabilities")
+            case .memory: return String(localized: "Memory")
             case .look: return String(localized: "Look")
             case .chat: return String(localized: "Bot Chat")
             }
@@ -48,38 +41,48 @@ enum BotProfileName {
     }
     enum Outcome: Equatable { case done, failed(String), uncertain }
     enum Phase: Equatable { case editing, creating, created }
+    enum Capability: String, Identifiable, CaseIterable {
+        case skills, toolsets, plugins, mcpServers
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .skills: return String(localized: "Skills")
+            case .toolsets: return String(localized: "Toolsets")
+            case .plugins: return String(localized: "Plugins")
+            case .mcpServers: return String(localized: "MCP servers")
+            }
+        }
+    }
 
     struct Draft: Equatable {
         var title = ""
         var role = ""
         var appearance = BotProfileAppearance(look: [:], fallbackTitle: "")
         var model: ModelCatalogOption?
-        /// On: `share_auth`, the new bot reads the host's saved sign-ins and keys in
-        /// place. Off: `mirror_credentials: false`, the bot starts with none. Values
-        /// never travel to the phone either way.
         var sharesCredentials = true
-        /// New bots only: becomes the Profile's `SOUL.md` when it has text; empty
-        /// keeps the host's default. A duplicate copies the source's instead.
         var instructions = ""
-        /// New bots only: `no_skills`, so the host seeds only its essential skills.
-        /// The host refuses it with `clone_from`, since a copy brings the source's skills.
         var skipsBundledSkills = false
+        var skills: [BotProfileCapability] = []
+        var toolsets: [BotProfileCapability] = []
+        var plugins: [BotProfileCapability] = []
+        var mcpServers: [BotProfileCapability] = []
+        var keepsMemory = true
     }
 
     let server: URL
     let connection: BotConnection
-    /// The bot being duplicated, whose config, skills and instructions the host clones.
-    let source: BotProfile?
+    private(set) var source: BotProfile?
+    let isDuplicate: Bool
+    let setupSources: [BotProfile]
     private(set) var draft: Draft
     private(set) var phase = Phase.editing
-    /// True while the socket and model inventory are being opened; Create waits for it.
     private(set) var isLoading = false
     private(set) var outcomes: [Step: Outcome] = [:]
     private(set) var modelGroups: [ModelCatalogGroup] = []
-    /// One-line note after a successful create when the host reports the bot
-    /// ended up without a model, so the user knows to finish setup.
     private(set) var note: String?
 
+    private var sourceLists: SourceLists?
+    private let resetMemory: @MainActor (String) async throws -> Void
     private var taken: Set<String>
     private var wire: (any BotTransport)?
     private var generation = 0
@@ -89,10 +92,17 @@ enum BotProfileName {
 
     init(server: URL, connection: BotConnection, roster: [BotProfile], source: BotProfile? = nil,
          store: BotConnectionStore? = nil, makeWire: (@MainActor (BotConnection) -> any BotTransport)? = nil,
+         resetMemory: (@MainActor (String) async throws -> Void)? = nil,
          onCreated: @escaping (String) -> Void = { _ in }) {
         self.server = server; self.connection = connection; self.source = source
+        isDuplicate = source != nil
+        setupSources = roster
         self.store = store ?? BotConnectionStore()
         self.makeWire = makeWire ?? { BotClient(saved: $0, server: server) }; self.onCreated = onCreated
+        self.resetMemory = resetMemory ?? { profile in
+            let reply = try await HermesConnections.shared.connection(for: connection, server: server).reply(.memoryReset(profile: profile))
+            guard (200..<300).contains(reply.status) else { throw BotFailure.unsupported }
+        }
         taken = Set(roster.map(\.id))
         var draft = Draft()
         if let source {
@@ -109,11 +119,8 @@ enum BotProfileName {
         self.draft = draft
     }
 
-    /// The Profile folder name the host will get; empty when the title yields none.
     var name: String { BotProfileName.slug(from: draft.title) }
     var nameIsTaken: Bool { taken.contains(name) }
-    /// True once a create attempt has written anything: the name is committed and
-    /// Try Again resumes the same bot instead of starting another.
     var hasStarted: Bool { !outcomes.isEmpty }
     var nameProblem: String? {
         let name = self.name
@@ -127,9 +134,11 @@ enum BotProfileName {
     var canCreate: Bool {
         phase == .editing && !isLoading && BotProfileName.isValid(name) && (hasStarted || !nameIsTaken)
     }
-    var isDuplicate: Bool { source != nil }
-    /// True after a create that finished with something left to do: a look that
-    /// did not save or a bot with no model. The sheet stays up to say so.
+    var steps: [Step] {
+        let changed = sourceLists.map { $0 != SourceLists(draft) } ?? false
+        let clearsMemory = source != nil && !draft.keepsMemory
+        return Step.allCases.filter { ($0 != .capabilities || changed) && ($0 != .memory || clearsMemory) }
+    }
     var needsAttention: Bool { note != nil || outcomes.values.contains { $0 != .done } }
 
     func setTitle(_ value: String) { draft.title = value; draft.appearance.title = value }
@@ -138,6 +147,36 @@ enum BotProfileName {
     func setSharesCredentials(_ value: Bool) { draft.sharesCredentials = value }
     func setInstructions(_ value: String) { draft.instructions = value }
     func setSkipsBundledSkills(_ value: Bool) { draft.skipsBundledSkills = value }
+    func setKeepsMemory(_ value: Bool) { draft.keepsMemory = value }
+    func setEnabled(_ enabled: Bool, _ capability: Capability, id: String) {
+        switch capability {
+        case .skills: Self.set(enabled, id: id, in: &draft.skills)
+        case .toolsets: Self.set(enabled, id: id, in: &draft.toolsets)
+        case .plugins: Self.set(enabled, id: id, in: &draft.plugins)
+        case .mcpServers: Self.set(enabled, id: id, in: &draft.mcpServers)
+        }
+    }
+    func items(_ capability: Capability) -> [BotProfileCapability] {
+        switch capability {
+        case .skills: return draft.skills
+        case .toolsets: return draft.toolsets
+        case .plugins: return draft.plugins
+        case .mcpServers: return draft.mcpServers
+        }
+    }
+    private static func set(_ enabled: Bool, id: String, in rows: inout [BotProfileCapability]) {
+        if let index = rows.firstIndex(where: { $0.id == id }) { rows[index].enabled = enabled }
+    }
+
+    func setSetupSource(_ profile: BotProfile?) async {
+        guard !isDuplicate, !hasStarted, phase == .editing, profile?.id != source?.id else { return }
+        source = profile
+        sourceLists = nil
+        draft.skills = []; draft.toolsets = []; draft.plugins = []; draft.mcpServers = []
+        draft.keepsMemory = false
+        guard let client = wire else { return }
+        await readSource(client, owner: generation)
+    }
     func setShape(_ shape: BotAvatarShape) {
         draft.appearance.shape = shape.rawValue; draft.appearance.custom = true; draft.appearance.imageKind = "shape"
         draft.appearance.generated = nil
@@ -148,7 +187,6 @@ enum BotProfileName {
     }
     var holdsConnection: Bool { wire != nil }
 
-    /// "Describe It" under the default Profile: the new bot does not exist yet.
     func sendAvatarPrompt(_ prompt: String) async throws -> String {
         guard let client = wire else { throw BotFailure.stale }
         return try await BotAvatarGeneration.ask(prompt, profile: "default", transport: client, validateDispatch: validate(generation))
@@ -161,8 +199,6 @@ enum BotProfileName {
         draft.appearance.expression = expression == .neutral ? nil : expression.rawValue
     }
 
-    /// Opens the socket and reads the model inventory. A failure here leaves the
-    /// picker empty; the create itself reconnects if needed.
     func load() async {
         generation += 1
         let owner = generation
@@ -180,10 +216,30 @@ enum BotProfileName {
                 try ensureOwner(owner, client)
                 modelGroups = HermesModelCatalog(options).groups
             }
+            if sourceLists == nil, !hasStarted { await readSource(client, owner: owner) }
         } catch {
             guard generation == owner, wire === client else { return }
             client.close(); wire = nil
         }
+    }
+
+    private func readSource(_ client: any BotTransport, owner: Int) async {
+        guard let source else { return }
+        let profile = source.id
+        var lists = SourceLists()
+        if let payload = try? await client.call(.profilesDescribe(name: profile), validateDispatch: validate(owner)) {
+            let details = BotProfileDetails(payload, expectedName: profile)
+            lists.skills = details.skills; lists.toolsets = details.toolsets; lists.mcpServers = details.mcpServers
+        }
+        if let payload = try? await client.call(.pluginsList(profile: profile), validateDispatch: validate(owner)) {
+            lists.plugins = (payload["plugins"].list ?? []).compactMap(HermesPlugin.init).filter(\.isEnabled).map {
+                BotProfileCapability(id: $0.key, name: $0.name, detail: $0.summary.isEmpty ? nil : $0.summary, enabled: true)
+            }
+        }
+        guard generation == owner, self.source?.id == profile, !hasStarted else { return }
+        sourceLists = lists
+        draft.skills = lists.skills; draft.toolsets = lists.toolsets
+        draft.plugins = lists.plugins; draft.mcpServers = lists.mcpServers
     }
 
     func close() {
@@ -192,11 +248,10 @@ enum BotProfileName {
         isLoading = false
         if phase == .creating {
             phase = .editing
-            for step in Step.allCases where outcomes[step] == nil { outcomes[step] = .uncertain }
+            for step in steps where outcomes[step] == nil { outcomes[step] = .uncertain }
         }
     }
 
-    /// Runs the steps that are not done yet. Never called twice concurrently.
     func create() async {
         guard canCreate else { return }
         generation += 1
@@ -214,18 +269,16 @@ enum BotProfileName {
                 try ensureOwner(owner, client)
             }
             try await createProfile(client, owner: owner)
+            await configureCapabilities(client, owner: owner)
+            await clearMemory(owner: owner)
             await configureLook(client, owner: owner)
             try await ensureChat(client, owner: owner)
             guard generation == owner else { return }
             phase = .created
             onCreated(name)
         } catch {
-            // A disconnect clears `wire` before the suspended call throws, so only the
-            // generation decides whether this attempt still owns the sheet.
             guard generation == owner else { return }
-            if !(error is BotCreatorStop), let step = Step.allCases.first(where: { outcomes[$0] == nil }) {
-                // A dropped connection mid-write leaves that write's fate unknown; the
-                // next attempt re-reads the host before writing again.
+            if !(error is BotCreatorStop), let step = steps.first(where: { outcomes[$0] == nil }) {
                 outcomes[step] = error as? BotFailure == .transport ? .uncertain : .failed(error.localizedDescription)
             }
             phase = .editing
@@ -244,14 +297,10 @@ enum BotProfileName {
         var profile = HermesCall.NewProfile(name: name, sharesCredentials: draft.sharesCredentials)
         let role = draft.role.trimmingCharacters(in: .whitespacesAndNewlines)
         if !role.isEmpty { profile.description = role }
-        if let source {
-            profile.cloneFrom = source.id
-        } else {
-            if !draft.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                profile.soul = draft.instructions
-            }
-            profile.skipsBundledSkills = draft.skipsBundledSkills
-        }
+        let instructions = draft.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let source { profile.cloneFrom = source.id }
+        if !isDuplicate, !instructions.isEmpty { profile.soul = draft.instructions }
+        if source == nil { profile.skipsBundledSkills = draft.skipsBundledSkills }
         if let model = draft.model, let provider = model.providerID {
             profile.model = HermesCall.Model(id: model.id, provider: provider)
         }
@@ -261,7 +310,8 @@ enum BotProfileName {
             guard reply["ok"].flag == true else { throw BotFailure.unsupported }
             outcomes[.profile] = .done
             taken.insert(name)
-            if reply["model_set"].flag != true, reply["mirrored"]["model_inherited"].flag != true {
+            let keepsSourceModel = source != nil && profile.model == nil
+            if !keepsSourceModel, reply["model_set"].flag != true, reply["mirrored"]["model_inherited"].flag != true {
                 note = String(localized: "No model is set for this bot yet. Pick one in Edit or in Hermes Desktop before chatting.")
             }
         } catch BotFailure.rejected(4062) {
@@ -270,7 +320,45 @@ enum BotProfileName {
         }
     }
 
-    /// The look is cosmetic: a failure is reported but does not stop the chat step.
+    private func configureCapabilities(_ client: any BotTransport, owner: Int) async {
+        guard steps.contains(.capabilities), outcomes[.capabilities] != .done, let original = sourceLists else { return }
+        var changes = HermesCall.ProfileChanges(name: name)
+        if draft.skills != original.skills { changes.disabledSkills = draft.skills.filter { !$0.enabled }.map(\.id) }
+        if draft.toolsets != original.toolsets { changes.enabledToolsets = draft.toolsets.filter(\.enabled).map(\.id) }
+        if draft.mcpServers != original.mcpServers { changes.enabledMCPServers = draft.mcpServers.filter(\.enabled).map(\.id) }
+        let failure = String(localized: "Some capabilities were not turned off. Edit the bot to set them.")
+        do {
+            var saved = true
+            if changes != HermesCall.ProfileChanges(name: name) {
+                let reply = try await client.call(.profilesConfigure(changes), validateDispatch: validate(owner))
+                try ensureOwner(owner, client)
+                saved = (changes.disabledSkills == nil || reply["applied"]["skills"].flag == true)
+                    && (changes.enabledToolsets == nil || reply["applied"]["toolsets"].flag == true)
+                    && (changes.enabledMCPServers == nil || reply["applied"]["mcp_servers"].flag == true)
+            }
+            for plugin in draft.plugins where !plugin.enabled {
+                _ = try await client.call(.pluginsToggle(profile: name, key: plugin.id, enable: false), validateDispatch: validate(owner))
+                try ensureOwner(owner, client)
+            }
+            outcomes[.capabilities] = saved ? .done : .failed(failure)
+        } catch {
+            guard generation == owner else { return }
+            outcomes[.capabilities] = .failed(failure)
+        }
+    }
+
+    private func clearMemory(owner: Int) async {
+        guard steps.contains(.memory), outcomes[.memory] != .done else { return }
+        do {
+            try await resetMemory(name)
+            guard generation == owner else { return }
+            outcomes[.memory] = .done
+        } catch {
+            guard generation == owner else { return }
+            outcomes[.memory] = .failed(String(localized: "The copied memory was not cleared."))
+        }
+    }
+
     private func configureLook(_ client: any BotTransport, owner: Int) async {
         if outcomes[.look] == .done { return }
         var look = draft.appearance
@@ -287,8 +375,6 @@ enum BotProfileName {
         }
     }
 
-    /// Adopt-before-mint, as Desktop: an existing "Bot Chat" row is the bot's chat
-    /// and is never duplicated. Only a confirmed absence creates one.
     private func ensureChat(_ client: any BotTransport, owner: Int) async throws {
         if outcomes[.chat] == .done { return }
         if try await findChat(client, owner: owner) { outcomes[.chat] = .done; return }
@@ -296,15 +382,11 @@ enum BotProfileName {
         let created = try await client.call(.sessionCreate(profile: name), validateDispatch: validate(owner))
         try ensureOwner(owner, client)
         guard let runtime = created["session_id"].text, !runtime.isEmpty else { throw BotFailure.unsupported }
-        // A canonical create already titled and hid it (#1603), and has no `session.title`.
         if client.speaksCanonicalProtocol { outcomes[.chat] = .done; return }
         do {
-            // The created row is lazy; the title write persists it so the roster and
-            // the phone's exact-title lookup find it before any prompt.
             _ = try await client.call(.sessionTitle(sessionID: runtime), validateDispatch: validate(owner))
             try ensureOwner(owner, client)
         } catch BotFailure.rejected(4022) {
-            // Another writer took the title in between; that chat is the bot's.
             try ensureOwner(owner, client)
             guard try await findChat(client, owner: owner) else { throw BotFailure.unsupported }
         }
@@ -340,5 +422,16 @@ enum BotProfileName {
     }
 }
 
-/// Ends a create after a step recorded its own failure message.
+private struct SourceLists: Equatable {
+    var skills: [BotProfileCapability] = []
+    var toolsets: [BotProfileCapability] = []
+    var plugins: [BotProfileCapability] = []
+    var mcpServers: [BotProfileCapability] = []
+
+    init() {}
+    init(_ draft: BotCreator.Draft) {
+        skills = draft.skills; toolsets = draft.toolsets; plugins = draft.plugins; mcpServers = draft.mcpServers
+    }
+}
+
 private struct BotCreatorStop: Error {}

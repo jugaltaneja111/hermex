@@ -1,16 +1,11 @@
 import SwiftUI
 
-/// The create and duplicate sheet: a live face, the name, an optional role, the
-/// drawn look, the model and the credential choice, plus instructions and the
-/// bundled-skills choice for a new bot, then one Create button.
-/// After a partial create the same sheet shows each step's outcome and Try Again.
 @MainActor struct BotCreateView: View {
     @State private var creator: BotCreator
     @State private var showsModels = false
     @State private var showsExpressions = false
     @State private var showsDescribe = false
-    /// What the face should do about the last edit: a hop for a shape, a wobble
-    /// for a color, a glance down while the name is typed.
+    @State private var capabilitySheet: BotCreator.Capability?
     @State private var cue: BotFaceCue?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -24,9 +19,6 @@ import SwiftUI
                     BotInteractiveFaceView(name: creator.name, appearance: creator.draft.appearance, size: 150, cue: cue)
                         .padding(.top, 24).padding(.bottom, 20)
                     if creator.hasStarted { results }
-                    // Once the Profile write has been dispatched these values are on the
-                    // host; a retry only finishes the remaining steps, so editing them
-                    // here would be a lie. Edit the bot afterwards instead.
                     card {
                         TextField("Name your bot", text: Binding(get: { creator.draft.title }, set: { creator.setTitle($0); cue = BotFaceCue(.glanceDown) }))
                             .font(AppFont.title3()).multilineTextAlignment(.center)
@@ -40,7 +32,7 @@ import SwiftUI
                     } else if !creator.name.isEmpty, !creator.hasStarted {
                         Text(verbatim: creator.name).font(AppFont.caption()).foregroundStyle(.appTertiary).padding(.top, 8)
                     }
-                    if let source = creator.source {
+                    if creator.isDuplicate, let source = creator.source {
                         Text("Copies \(source.name)’s instructions, settings and skills. Its chat stays with the original.")
                             .font(AppFont.caption()).foregroundStyle(.appSecondary).multilineTextAlignment(.center)
                             .padding(.top, 10).padding(.horizontal, 12)
@@ -50,6 +42,7 @@ import SwiftUI
 
                     sectionLabel("Setup")
                     card {
+                        if !creator.isDuplicate, !creator.setupSources.isEmpty { setupSourcePicker }
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Role").font(AppFont.caption()).foregroundStyle(.appSecondary)
                             TextField("What this bot is for (optional)", text: Binding(get: { creator.draft.role }, set: { creator.setRole($0) }), axis: .vertical)
@@ -69,9 +62,12 @@ import SwiftUI
                          ? "The bot signs in with the keys already saved on the host. Nothing is copied to this phone."
                          : "The bot starts with no API keys. Add them in Hermes Desktop before it can answer.")
                         .font(AppFont.caption2()).foregroundStyle(.appTertiary).padding(.horizontal, 12).padding(.top, 7)
+                    if !creator.isDuplicate, let source = creator.source {
+                        caption("Copies \(source.name)’s model, API keys, plugins, tools, skills and MCP servers.")
+                    }
 
-                    // A duplicate copies the source's instructions and skills, so these are new-bot only.
                     if !creator.isDuplicate { startingPoint.disabled(creator.hasStarted) }
+                    if creator.source != nil { copiedCapabilities.disabled(creator.hasStarted) }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
@@ -105,6 +101,11 @@ import SwiftUI
                 }
             }
             .navigationDestination(isPresented: $showsExpressions) { expressionPicker }
+            .sheet(item: $capabilitySheet) { capability in
+                BotCapabilityPicker(title: capability.title, items: items(capability),
+                                    setEnabled: { creator.setEnabled($0, capability, id: $1) },
+                                    done: { capabilitySheet = nil })
+            }
             .sheet(isPresented: $showsDescribe) {
                 BotAvatarDescribeSheet(send: { [creator] prompt in try await creator.sendAvatarPrompt(prompt) }) { generated in
                     creator.setGenerated(generated); cue = BotFaceCue(.hop)
@@ -116,12 +117,9 @@ import SwiftUI
         .task { await creator.load() }
         .onDisappear { creator.close() }
         .onChange(of: scenePhase) { if scenePhase == .background { creator.close() } }
-        // A clean create closes on its own; one with leftovers stays up so the
-        // results and the note are read before Done.
         .onChange(of: creator.phase) { if creator.phase == .created, !creator.needsAttention { dismiss() } }
     }
 
-    /// The new bot's instructions and whether it starts with the bundled skills.
     @ViewBuilder private var startingPoint: some View {
         sectionLabel("Instructions")
         card {
@@ -140,8 +138,15 @@ import SwiftUI
                 .accessibilityLabel("Instructions")
                 .padding(12)
         }
-        caption("Leave empty to use the host’s default instructions.")
+        if let source = creator.source {
+            caption("Leave empty to keep \(source.name)’s instructions.")
+        } else {
+            caption("Leave empty to use the host’s default instructions.")
+            bundledSkills
+        }
+    }
 
+    @ViewBuilder private var bundledSkills: some View {
         sectionLabel("Skills")
         card {
             Toggle(isOn: Binding(get: { creator.draft.skipsBundledSkills }, set: { creator.setSkipsBundledSkills($0) })) {
@@ -154,7 +159,47 @@ import SwiftUI
                 : "The bot starts with every skill that ships with Hermes.")
     }
 
-    /// Footnote under a card, leading-aligned however short it is.
+    private var setupSourcePicker: some View {
+        Picker(selection: Binding(get: { creator.source?.id }, set: { id in
+            let profile = creator.setupSources.first { $0.id == id }
+            Task { await creator.setSetupSource(profile) }
+        })) {
+            Text("None").tag(String?.none)
+            ForEach(creator.setupSources) { profile in Text(profile.name).tag(Optional(profile.id)) }
+        } label: {
+            Label("Copy Setup From", systemImage: "square.on.square")
+        }
+        .pickerStyle(.menu)
+        .padding(16)
+    }
+
+    @ViewBuilder private var copiedCapabilities: some View {
+        sectionLabel("Capabilities")
+        card {
+            if !creator.draft.skills.isEmpty { capabilityRow(.skills, systemImage: "sparkles") }
+            if !creator.draft.toolsets.isEmpty { capabilityRow(.toolsets, systemImage: "wrench.and.screwdriver") }
+            if !creator.draft.plugins.isEmpty { capabilityRow(.plugins, systemImage: "puzzlepiece.extension") }
+            if !creator.draft.mcpServers.isEmpty { capabilityRow(.mcpServers, systemImage: "server.rack") }
+            if let source = creator.source {
+                Toggle(isOn: Binding(get: { creator.draft.keepsMemory }, set: { creator.setKeepsMemory($0) })) {
+                    Text("Copy \(source.name)’s memory")
+                }
+                .padding(16)
+            }
+        }
+        caption("Everything is copied. What you turn off here stays off in the new bot.")
+    }
+
+    private func items(_ capability: BotCreator.Capability) -> [BotProfileCapability] { creator.items(capability) }
+
+    private func capabilityRow(_ capability: BotCreator.Capability, systemImage: String) -> some View {
+        let enabled = items(capability).filter(\.enabled)
+        return navigationRow(capability.title, subtitle: enabled.map(\.name).prefix(3).joined(separator: ", "),
+                             value: "\(enabled.count)/\(items(capability).count)", systemImage: systemImage) {
+            capabilitySheet = capability
+        }
+    }
+
     private func caption(_ text: LocalizedStringKey) -> some View {
         Text(text).font(AppFont.caption2()).foregroundStyle(.appTertiary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -187,11 +232,10 @@ import SwiftUI
         }
     }
 
-    /// Per-step outcomes after an attempt, mirroring the editor's save results.
     private var results: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(creator.phase == .created ? (creator.needsAttention ? "Created, with a note" : "Created") : "Needs Attention").font(AppFont.headline())
-            ForEach(BotCreator.Step.allCases.filter { creator.outcomes[$0] != nil }) { step in
+            ForEach(creator.steps.filter { creator.outcomes[$0] != nil }) { step in
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: icon(creator.outcomes[step]!)).foregroundStyle(color(creator.outcomes[step]!)).frame(width: 20)
                     VStack(alignment: .leading, spacing: 3) {

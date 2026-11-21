@@ -2,8 +2,6 @@ import SwiftData
 import XCTest
 @testable import HermesMobile
 
-/// Creating, duplicating and deleting bots: the host writes, their order, what a
-/// retry repeats, and what the phone forgets after a delete.
 @MainActor final class BotLifecycleTests: XCTestCase {
     private let server = URL(string: "https://one.example")!
     private var defaults: UserDefaults!
@@ -19,8 +17,6 @@ import XCTest
         defaults.removePersistentDomain(forName: suite)
         super.tearDown()
     }
-
-    // MARK: - Names
 
     func testProfileNamesFollowTheHostRules() {
         XCTAssertEqual(BotProfileName.slug(from: "  Chief of Staff! "), "chief-of-staff")
@@ -49,10 +45,6 @@ import XCTest
         XCTAssertEqual(wire.calls.map(\.0), [])
     }
 
-    // MARK: - Create
-
-    /// A canonical host's create titles and hides the Bot Chat itself (#1603), and has no
-    /// `session.title`: the chat is done once it's made.
     func testACanonicalCreateMakesTheChatWithoutATitleWrite() async throws {
         let (creator, wire) = try makeCreator(roster: []) { _ in }
         wire.speaksCanonicalProtocol = true
@@ -146,6 +138,89 @@ import XCTest
         XCTAssertEqual(creator.phase, .created)
     }
 
+    func testDuplicateTurnsOffOnlyWhatTheSheetTurnedOff() async throws {
+        let source = try XCTUnwrap(BotProfile(row("triage")))
+        let (creator, wire) = try makeCreator(roster: [row("triage")], source: source)
+        wire.describe = sourceDetails
+        await creator.load()
+        XCTAssertEqual(creator.draft.skills.map(\.id), ["mail", "calendar", "old"])
+        creator.setEnabled(false, .skills, id: "calendar")
+        creator.setEnabled(false, .mcpServers, id: "github")
+
+        await creator.create()
+
+        XCTAssertEqual(wire.calls.map(\.0), ["model.options", "profiles.describe", "plugins.manage", "profiles.create", "profiles.configure",
+                                             "profiles.configure", "session.list", "session.create", "session.title"])
+        let changes = wire.calls[4].1
+        XCTAssertEqual(changes["name"], .string("triage-copy"), "the copy is changed, never the source")
+        XCTAssertEqual(changes["disabled_skills"], .array([.string("calendar"), .string("old")]), "what the source had off stays off")
+        XCTAssertEqual(changes["enabled_mcp_servers"], .array([.string("linear")]))
+        XCTAssertEqual(creator.phase, .created); XCTAssertFalse(creator.needsAttention)
+    }
+
+    func testNewBotCopyingASetupKeepsItsOwnInstructionsAndDropsWhatWasTurnedOff() async throws {
+        let triage = try XCTUnwrap(BotProfile(row("triage")))
+        let (creator, wire) = try makeCreator(roster: [row("triage")])
+        wire.describe = sourceDetails
+        wire.plugins = .object(["plugins": .array([
+            .object(["key": .string("clinepass"), "name": .string("clinepass"), "status": .string("enabled"), "source": .string("git")]),
+            .object(["key": .string("spotify"), "name": .string("spotify"), "status": .string("enabled"), "source": .string("git")]),
+            .object(["key": .string("idle"), "name": .string("idle"), "status": .string("disabled"), "source": .string("git")])])])
+        wire.create = { params in .object(["ok": .bool(true), "name": params["name"] ?? .null, "model_set": .bool(false)]) }
+        await creator.load()
+        await creator.setSetupSource(triage)
+        XCTAssertEqual(creator.draft.plugins.map(\.id), ["clinepass", "spotify"], "only what the source has on can be turned off")
+        XCTAssertFalse(creator.draft.keepsMemory, "a new bot starts without the source's memory")
+        creator.setTitle("Trader"); creator.setInstructions("Watch the markets.")
+        creator.setSkipsBundledSkills(true)
+        creator.setEnabled(false, .plugins, id: "spotify")
+
+        await creator.create()
+
+        let create = try XCTUnwrap(wire.calls.first { $0.0 == "profiles.create" }?.1)
+        XCTAssertEqual(create["clone_from"], .string("triage"))
+        XCTAssertEqual(create["soul"], .string("Watch the markets."), "the new bot gets its own instructions")
+        XCTAssertNil(create["no_skills"], "the host refuses no_skills with clone_from")
+        let toggles = wire.calls.filter { $0.0 == "plugins.manage" && $0.1["action"] == .string("toggle") }.map(\.1)
+        XCTAssertEqual(toggles.count, 1)
+        XCTAssertEqual(toggles.first?["profile"], .string("trader"), "the copy is changed, never the source")
+        XCTAssertEqual(toggles.first?["key"], .string("spotify")); XCTAssertEqual(toggles.first?["enable"], .bool(false))
+        XCTAssertEqual(memoryResets, ["trader"])
+        XCTAssertEqual(creator.phase, .created)
+        XCTAssertNil(creator.note, "a copy keeps the source's model")
+        XCTAssertFalse(creator.needsAttention)
+    }
+
+    func testUntouchedDuplicateWritesNoCapabilities() async throws {
+        let source = try XCTUnwrap(BotProfile(row("triage")))
+        let (creator, wire) = try makeCreator(roster: [row("triage")], source: source)
+        wire.describe = sourceDetails
+        await creator.load()
+        creator.setEnabled(false, .skills, id: "mail"); creator.setEnabled(true, .skills, id: "mail")
+
+        await creator.create()
+
+        XCTAssertEqual(wire.calls.map(\.0).filter { $0 == "profiles.configure" }.count, 1, "only the look")
+        XCTAssertNil(creator.outcomes[.capabilities])
+    }
+
+    func testRefusedCapabilitiesAreReportedAndTheChatIsStillMade() async throws {
+        let source = try XCTUnwrap(BotProfile(row("triage")))
+        let (creator, wire) = try makeCreator(roster: [row("triage")], source: source)
+        wire.describe = sourceDetails
+        await creator.load()
+        creator.setEnabled(false, .mcpServers, id: "github")
+        let applied: BotJSON = .object(["ui_meta": .bool(true), "ui_meta_revisions": .object(["hermes-bots": .number(1)])])
+        wire.configure = { _ in .object(["ok": .bool(true), "applied": applied]) }
+
+        await creator.create()
+
+        XCTAssertEqual(creator.phase, .created, "the bot and its chat still exist")
+        XCTAssertTrue(creator.needsAttention)
+        guard case .failed = creator.outcomes[.capabilities] else { return XCTFail("the unsaved choice is reported") }
+        XCTAssertEqual(creator.outcomes[.chat], .done)
+    }
+
     func testHostRefusingTheNameStopsBeforeLookAndChat() async throws {
         let (creator, wire) = try makeCreator(roster: [])
         wire.create = { _ in throw BotFailure.rejected(4062) }
@@ -193,7 +268,6 @@ import XCTest
         XCTAssertEqual(creator.outcomes[.profile], .uncertain)
         XCTAssertEqual(creator.phase, .editing)
 
-        // The host did create it; the retry must find it instead of minting a twin.
         wire.roster = [row("fresh")]
         wire.create = { _ in XCTFail("no second create"); return .null }
         wire.calls = []
@@ -246,7 +320,6 @@ import XCTest
                                      username: "u", password: "p", hermesVersion: nil), server: server)
         let (creator, wire) = try makeCreator(roster: [], store: store)
         creator.setTitle("Fresh")
-        // The user re-pointed the Bot connection while the sheet was open.
         try store.save(BotConnection(id: UUID(), name: "Other", address: URL(string: "https://other.example")!,
                                      username: "u", password: "p", hermesVersion: nil), server: server)
 
@@ -260,7 +333,6 @@ import XCTest
     func testDisconnectDuringCreateReleasesTheSheetWithAnUncertainStep() async throws {
         let (creator, wire) = try makeCreator(roster: [])
         creator.setTitle("Fresh")
-        // BotClient closes and reports the disconnect before the suspended call throws.
         wire.create = { _ in
             wire.onDisconnect?(BotFailure.transport)
             throw BotFailure.transport
@@ -306,8 +378,6 @@ import XCTest
         XCTAssertEqual(wire.calls.map(\.0), ["profiles.create"], "the late reply wrote nothing")
     }
 
-    // MARK: - Delete
-
     func testDeleteRemovesTheHostProfileThenLocalStateAndRereadsTheRoster() async throws {
         let wire = BotInboxFixtureWire(roster: [row("triage"), row("keep")])
         wire.delete = { _ in wire.roster = [self.row("keep")] }
@@ -329,8 +399,6 @@ import XCTest
         XCTAssertEqual(BotUnreadStore(defaults: defaults).load(connectionID: inbox.connection!.id).keys.sorted(), ["keep"])
     }
 
-    /// A deleted bot's Bot Chat leaves the offline cache, so a bot made again under its name
-    /// never shows it; the other bots' stay.
     func testDeleteDropsTheBotsCachedBotChat() async throws {
         let wire = BotInboxFixtureWire(roster: [row("triage"), row("keep")])
         wire.delete = { _ in wire.roster = [self.row("keep")] }
@@ -352,6 +420,36 @@ import XCTest
         XCTAssertNil(try CacheStore.cachedHermesBotChatRoot(serverURL: server, connectionID: connection, profile: "triage", in: context))
         XCTAssertEqual(try CacheStore.cachedHermesBotChatRoot(serverURL: server, connectionID: connection, profile: "keep", in: context),
                        "root")
+    }
+
+    func testARosterOmittingABotDropsItsCachedBotChat() async throws {
+        let wire = BotInboxFixtureWire(roster: [row("triage"), row("fresh"), row("keep")])
+        let inbox = try makeInbox(wires: [wire]) { _, _ in }
+        let context = ModelContext(try ModelContainer(for: CachedSession.self, CachedMessage.self,
+                                                      configurations: ModelConfiguration(isStoredInMemoryOnly: true)))
+        inbox.offlineCache = context
+        await inbox.open()
+        let connection = try XCTUnwrap(inbox.connection?.id)
+        let otherConnection = UUID()
+        let message = ChatMessage(role: "user", content: "Hi", timestamp: 1, messageId: "1", rowID: 1)
+        for (id, profile) in [(connection, "triage"), (connection, "keep"), (otherConnection, "triage")] {
+            try CacheStore.cacheHermesMessages([message], newestCoverage: .all, serverURL: server,
+                                               scope: CacheStore.hermesBotChatScope(connectionID: id, profile: profile, root: "root"),
+                                               in: context)
+        }
+        let epoch = CacheStore.hermesCacheEpoch(serverURL: server)
+
+        wire.roster = [row("keep")]
+        wire.emit("sessions.changed")
+        await settle(inbox) { $0.profiles.map(\.id) == ["keep"] }
+
+        let root = { (id: UUID, profile: String) in
+            try CacheStore.cachedHermesBotChatRoot(serverURL: self.server, connectionID: id, profile: profile, in: context)
+        }
+        XCTAssertNil(try root(connection, "triage"))
+        XCTAssertEqual(try root(connection, "keep"), "root")
+        XCTAssertEqual(try root(otherConnection, "triage"), "root")
+        XCTAssertNotEqual(CacheStore.hermesCacheEpoch(serverURL: server), epoch, "a chat attached before can't write back")
     }
 
     func testDefaultProfileCannotBeDeleted() async throws {
@@ -383,7 +481,6 @@ import XCTest
         XCTAssertEqual(purged, 0)
         XCTAssertEqual(wire.listCalls, 1, "no automatic retry or re-read")
 
-        // The bot survived: the next roster read keeps its local state.
         wire.emit("sessions.changed")
         await settle(inbox) { $0.profiles.map(\.id) == ["triage"] && wire.listCalls == 2 }
         XCTAssertEqual(purged, 0)
@@ -405,7 +502,7 @@ import XCTest
         XCTAssertEqual(BotUnreadStore(defaults: defaults).load(connectionID: inbox.connection!.id).keys.sorted(), ["keep"])
     }
 
-    // MARK: - Helpers
+    private var memoryResets: [String] = []
 
     private func makeCreator(roster: [BotJSON], source: BotProfile? = nil, store: BotConnectionStore? = nil,
                              onCreated: @escaping (String) -> Void = { _ in }) throws -> (BotCreator, BotLifecycleFixtureWire) {
@@ -418,11 +515,11 @@ import XCTest
         let connection = try XCTUnwrap(store.load(server: server))
         let wire = BotLifecycleFixtureWire(roster: roster)
         let creator = BotCreator(server: server, connection: connection, roster: roster.compactMap(BotProfile.init),
-                                 source: source, store: store, makeWire: { _ in wire }, onCreated: onCreated)
+                                 source: source, store: store, makeWire: { _ in wire },
+                                 resetMemory: { [weak self] in self?.memoryResets.append($0) }, onCreated: onCreated)
         return (creator, wire)
     }
 
-    /// Waits for `condition` through Observation rather than sleeping.
     private func settle(_ inbox: BotInbox, until condition: @escaping @MainActor (BotInbox) -> Bool) async {
         let done = expectation(description: "inbox settled")
         Task { @MainActor in
@@ -446,6 +543,15 @@ import XCTest
                         makeWire: { _ in queue.removeFirst() }, purgeLocalState: purge)
     }
 
+    private var sourceDetails: BotJSON {
+        .object(["name": .string("triage"),
+                 "skills": .array([.object(["name": .string("mail"), "enabled": .bool(true)]),
+                                   .object(["name": .string("calendar"), "enabled": .bool(true)]),
+                                   .object(["name": .string("old"), "enabled": .bool(false)])]),
+                 "mcp_servers": .array([.object(["name": .string("github"), "transport": .string("http"), "enabled": .bool(true)]),
+                                        .object(["name": .string("linear"), "transport": .string("http"), "enabled": .bool(true)])])])
+    }
+
     private func row(_ name: String, look: [String: BotJSON]? = nil, description: String = "") -> BotJSON {
         var fields: [String: BotJSON] = [
             "name": .string(name), "display_name": .string(""), "description": .string(description), "has_avatar": .bool(false),
@@ -456,8 +562,6 @@ import XCTest
     }
 }
 
-/// Answers the create flow's calls with overridable handlers and lets a test park
-/// `profiles.create` to leave the screen mid-write.
 @MainActor final class BotLifecycleFixtureWire: BotTransport {
     var replayEpoch: String? = "epoch"
     var speaksCanonicalProtocol = false
@@ -466,11 +570,12 @@ import XCTest
     var roster: [BotJSON]
     var sessions: [BotJSON] = []
     var create: (([String: BotJSON]) throws -> BotJSON)?
+    var describe: BotJSON?
+    var plugins: BotJSON?
     var configure: (([String: BotJSON]) throws -> BotJSON)?
     var sessionCreate: (([String: BotJSON]) throws -> BotJSON)?
     var title: (([String: BotJSON]) throws -> BotJSON)?
     var calls: [(String, [String: BotJSON])] = []
-    /// Each `keepPlatformNote`'s Profile, with the last call sent before it.
     var platformNotes: [String] = []
     func keepPlatformNote(profile: String) async { platformNotes.append("\(profile) after \(calls.last?.0 ?? "nothing")") }
     var onCall: ((String) -> Void)?
@@ -490,6 +595,9 @@ import XCTest
         switch method {
         case "model.options": return .object(["providers": .array([])])
         case "profiles.list": return .object(["profiles": .array(roster)])
+        case "profiles.describe":
+            guard let describe else { throw BotFailure.unsupported }
+            return describe
         case "profiles.create":
             if holdsCreate { await withCheckedContinuation { held.append($0) } }
             try validateDispatch?()
@@ -498,7 +606,12 @@ import XCTest
                             "mirrored": .object(["auth": .string("shared")])])
         case "profiles.configure":
             if let configure { return try configure(params) }
-            return .object(["ok": .bool(true), "applied": .object(["ui_meta": .bool(true), "ui_meta_revisions": .object(["hermes-bots": .number(1)])])])
+            return .object(["ok": .bool(true), "applied": .object(["ui_meta": .bool(true), "skills": .bool(true), "mcp_servers": .bool(true),
+                                                            "ui_meta_revisions": .object(["hermes-bots": .number(1)])])])
+        case "plugins.manage":
+            if params["action"] == .string("toggle") { return .object(["ok": .bool(true)]) }
+            guard let plugins else { throw BotFailure.unsupported }
+            return plugins
         case "session.list": return .object(["sessions": .array(sessions)])
         case "session.create":
             if let sessionCreate { return try sessionCreate(params) }

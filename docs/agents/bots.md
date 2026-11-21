@@ -251,6 +251,21 @@ cache's copy) that opens `HermesDelegatedWorkView`. A history row with
 `display_kind: "async_delegation_complete"` draws as `HermesDelegationCompletionCard`; live, it
 arrives with the newest rows the delivery's turn re-reads when it ends.
 
+Its host notices are `HermesHostNotices` (#1746): `notification.show` and `notification.clear`,
+which both gateways send for credits, a slow agent start, a dropped model switch, the low-disk
+question, a plugin's `post_message` and `/login`'s sign-in link. They are kept by `key` (else
+`id`), newest last; a known key is replaced in place and a clear withdraws it. A `ttl` notice
+shows only from a live frame and hides after its `ttl_ms` on one scheduled task; the others also
+come back from every replay, in order, a rebuilding one's too (so a first open shows them), and
+stay until cleared or dismissed. The live frame that reveals a gap still applies, since the
+rebuild replays only what follows it. A new runtime or replay epoch (a host restart, or the host ending a
+session nobody watched for its orphan grace, 5 minutes by default; a canonical session keeps its id)
+drops the old lifetime's notices and timers; a gap or a cut-short replay within one epoch keeps them.
+A dismissed key stays
+hidden until the host sends new text for it. `HostNoticeRow` shows the newest above the composer
+(its `detail` on a tap) and says how many wait behind it; never a transcript row, the error line
+or a haptic. Nothing is cached: leaving the chat drops them and their timers.
+
 Its host requests are `HermesChatRequests` (#1011, #1141), on the Bot request model below and
 the engine's `answer`. Each takes the clarification's slot above the composer, collapsible
 to its bar while the transcript stays readable. An approval shows as `ApprovalRequestInset`
@@ -431,8 +446,8 @@ pin in `gateway/wake.py`, `hermes_state_messages.py` and
 A blocking request is whatever has parked the bot. The gateway sends JSON-RPC
 server requests with string ids; at the pin the methods are `clarify`,
 `approval`, `sudo`, `secret`, `vault.unlock_prompt`, `vault.save_login`,
-`vault.code`, `terminal.read`, `window.read`, `preview.read`, `preview.act` and
-`tour` (`tui_gateway/contracts/server_requests.py`). `BotClient` forwards those
+`vault.code`, `terminal.read`, `window.read`, `preview.read`, `preview.act`,
+`tour`, `theme.apply` and `theme.pick` (`tui_gateway/contracts/server_requests.py`). `BotClient` forwards those
 envelopes separately from sequenced events and integer-id RPC replies. Both
 `session.resume` (including `omit_messages`) and `session.events.since` restore
 `open_requests: [{id, method, params}]`. Requests belong to the current runtime.
@@ -440,8 +455,8 @@ Replay always includes the array; resume omits it when empty, so an empty or
 omitted array clears the requests. A newer live request or cancellation cannot be
 overwritten by an older in-flight snapshot. Unknown request methods remain
 needs-attention without an answerable card, and so are the password-vault prompts,
-which the phone no longer answers (#1148). The phone never replies to a
-request frame, not even with -32601 for a kind it cannot handle: the host treats
+which the phone no longer answers (#1148). Apart from the theme requests below, the
+phone never replies to a request frame without a tap, not even with -32601 for a kind it cannot handle: the host treats
 that reply as the answer and would withdraw the request before Desktop could
 answer it. Request payloads and credential values are never cached. A Hermes session in
 the main chat shares this model and the answer dispatch (see `HermesChatRequests` above).
@@ -553,7 +568,24 @@ The old per-kind answer methods (`sudo.respond`, `secret.respond`,
 Desktop renderer data the phone cannot supply. Their cards report the wait and
 retain Stop.
 
-Nothing is sent without a tap. Generation, runtime and request id are captured
+`theme.apply` and `theme.pick` come from `set_theme`, in the `desktop_ui` toolset a
+`gui` session gets on a gateway Webapp (#1727; `hermes-server.md` § The agent's surface note). They get no card and never join the open requests: a Hermes
+chat answers each one at once, without a tap, once per envelope id, live or restored
+from `open_requests` (`HermesThemeRequest`), through the same answer path as a credential:
+a gateway Webapp takes only the response frame (its `request.answer` says `expired`) and then
+sends `request.cancel` with `resolved`. `theme.apply {accent?, mode?, layout?}`
+sets the app-wide light/dark mode and accent as Settings > Appearance does, then answers
+`{value}` with JSON text: `{success: true, applied: {mode?, accent?}}`, where `accent` is
+the swatch id sent, `custom:#RRGGBB` for a hex, or null for `nous` and `theme` (the theme's
+own accent, as on Desktop). Desktop's swatches land on Hermex's: green, cyan (Teal) and
+violet (Indigo), pink, red and orange. `mono`, an unknown value, or any `layout` refuses the
+whole request with `{success: false, error, available}` and changes nothing. `theme.pick
+{picker}` is answered with `{said}`, telling the agent to ask in the chat (Hermex has no
+picker card), never `{cancelled}`, which reads as the user dismissing a card. The texts are
+for the agent, in English and outside the String Catalog. Only an attached chat on screen
+receives them; a Desktop window attached to the same session may answer first.
+
+Nothing but a theme answer is sent without a tap. Generation, runtime and request id are captured
 on tap and revalidated at socket dispatch. `ok` means accepted; `expired` means
 already answered or withdrawn. A JSON-RPC rejection leaves the connection usable.
 A lost reply has an uncertain outcome and is never automatically resent.
@@ -695,6 +727,15 @@ the chat's Profile on the `.provisioning` deadline, never the webui's multipart
 nothing fails. The host's `{detail}` is the failure Server first falls back on-device
 from. There is no capability probe, because `/api/audio/voice-config` returns provider
 keys.
+
+Talk (the waveform button that takes the send button's place in an empty Hermes
+composer) is a hands-free loop over the
+same pieces: it records on the phone until a pause, transcribes with the same
+`POST /api/audio/transcribe`, sends the transcript through the chat's normal send
+path, speaks the finished reply with Listen, and listens again. Interrupt stops the
+reply; End Talk, leaving the chat or backgrounding the app ends the loop. It is
+shown only while no reply runs and the composer is empty, so a typed draft is never
+replaced. `docs/adr/0182-talk-mode.md` has the decisions.
 
 A bot's chat keeps its draft under the `.bot` key: server + connection UUID + Profile.
 After uploads finish, immediately before prompt submission, the client flushes an
@@ -896,7 +937,8 @@ look revision does not advance.
 
 Capability pickers edit only rows returned by `profiles.describe`: disabled skill
 names, the enabled toolset pin and configured MCP servers. They do not expose a
-second skills marketplace, Tasks implementation or global server settings. The
+second skills marketplace, Tasks implementation or global server settings: adding
+skills is the Skills page's hub and adding MCP servers is Settings → Server → MCP Servers. The
 existing webui Tasks, Skills and Settings screens are not linked from this editor
 because there is no verified identity mapping from a direct-Hermes connection and
 Profile to those separate webui contracts.
@@ -1209,6 +1251,19 @@ shows the start with a "Preview truncated" note. `/api/fs/*` takes any host path
 path is the folder joined with names from its own listing, never the listing's `path`, which
 the host resolves (`/private/var/…` on a Mac). A name that is empty, `.`, `..` or holds a
 separator is refused before any request.
+
+The Skills page's Discover Skills button opens the skills hub (`SkillsHubView`,
+`HermesSkillsHubClient`) for the same Profile, over `skills.manage`: `browse`
+(`{items: [{name, description, source, trust, identifier}], page, total_pages}`, a page at a
+time behind Load More), `search` (`{results: [{name, description}]}`, at most 20, sent on the
+keyboard's Search), `inspect` (`{info}` with `skill_md_preview`; `{}` shows the row's own
+fields) and `install` (`{installed, name}`). `query` carries the search text or the skill's
+identifier; a search row has no identifier, so it installs by name and the host resolves it.
+Install asks first, naming the Profile, is sent once, and waits as long as a plugin install.
+A refusal is 5031 with the host's last line (a blocked security scan, an ambiguous name, a
+failed fetch) and is shown as sent; -32601 or 4017 shows the too-old state. After an install
+the Skills list is read again. Handlers read in `tui_gateway/methods_tools.py` at `3b421578`;
+not yet exercised against a live host.
 
 ## Workspace on a Hermes host
 
@@ -1623,12 +1678,35 @@ so a retry never mints a second Profile or chat. A look failure is reported
 and the chat step still runs; the Edit screen fixes the look later. Leaving
 the sheet mid-write marks pending steps uncertain; nothing retries on its own.
 
+A new bot can also copy another bot's setup ("Copy Setup From"). A fresh
+`profiles.create` gets only the launch Profile's model block and `.env`: no
+plugins (a model provider such as ClinePass is a per-Profile plugin, so the pin
+fails with "Unknown provider"), no MCP servers, toolset pins or tool settings.
+So a copied setup is a `clone_from` too, with the new bot's own `soul` when its
+instructions have text (the host writes it after the clone) and never
+`no_skills`.
+
+A copy's sheet, Duplicate or Copy Setup From, reads the source's
+`profiles.describe` and `plugins.manage list` and lists its skills, toolsets,
+enabled plugins and MCP servers as on/off rows. The host has no selective clone,
+so `clone_from` still copies everything; when a row was changed, a capabilities
+step follows `profiles.create`: one `profiles.configure` with `disabled_skills`,
+`enabled_toolsets` and/or `enabled_mcp_servers` (only the lists that changed,
+each sent whole), then `plugins.manage toggle` off on the copy for each plugin
+turned off, so a retry repeats it safely. A skill turned off there is disabled
+in the copy, not absent from its folder. A failed read shows no rows and copies
+everything; a failed write is reported like the look and fixed in the Edit
+screen. The clone also copies `memories/MEMORY.md` and `USER.md`: Duplicate
+keeps them by default, Copy Setup From does not, and a memory step deletes them
+with `POST /api/memory/reset?profile=<copy>` (`target: all`).
+
 Credential inheritance is one explicit switch, on by default: on sends
 `share_auth: true` so the bot reads the host's `auth.json` in place (one token
 pool, no forked refresh), off sends `mirror_credentials: false` so the bot
 starts with no keys. Secret values never reach the phone. A create whose reply
 reports neither `model_set` nor `mirrored.model_inherited` shows a one-line
-note to pick a model. Duplicates clone config, skills and `SOUL.md` through
+note to pick a model, except a copy with no model picked, which keeps its
+source's. Duplicates clone config, skills and `SOUL.md` through
 `clone_from`; the drawn look is copied, the photo asset and Desktop
 organization (`pinned`, `sectionId`, `sectionName`) are not, and the chat
 stays with the original. Create-from-description (`llm.oneshot`) is not
@@ -1988,13 +2066,26 @@ Send resolves a draft that opens with `/name` in this order:
    (#1053) go back to the Sessions list under the chat, or push one in the chat's
    Profile; `/resume <name>` opens the one session the list's search finds titled exactly
    `<name>` (ignoring case), and otherwise the list searching `<name>`. `/branch` and `/fork`
-   (#1051) branch the whole session as above.
-2. **Held until a later slice of #702** (`hermesHeldNames`): commands that would move between
-   chats behind the phone's back show a notice naming #702 and send nothing. None is held now.
-3. **A catalog skill**: `command.dispatch` expands it and `message` is submitted.
-4. **Any other catalog command or alias**: `slash.exec {session_id, command}`
+   (#1051) branch the whole session as above. `/rollback` (#1728) is the runtime's
+   `rollback.list`, `rollback.diff` and `rollback.restore {session_id, hash, file_path?}`,
+   never `slash.exec`, which a gateway's Webapp refuses for it. `/rollback` lists the
+   checkpoints, `/rollback diff N` reads the list again and shows that checkpoint's stat and
+   diff, and `/rollback N [file]` reads the list again, asks first with that checkpoint's time
+   and message, and sends its hash. Both send the hash, never the number, so a checkpoint
+   taken meanwhile can't shift it, and a number or hash the list doesn't hold sends nothing:
+   the host answers an unknown hash's diff empty, as if nothing changed. `--all` gets the
+   usage notice: the host's default keeps the user's hand edits. A whole-tree restore is
+   refused while a turn runs (4009, or a Webapp's 4001 `session_busy`) and in a Bot Chat,
+   and holds Send while it is out, as `/undo` does; when its `history_removed` is above 0 the
+   newest rows are read again and replace the transcript, as after `/undo`. Only a 4001 that
+   says the host no longer holds the runtime (a dashboard's `session not found`, a Webapp's
+   `not_found` or `runtime_retired`) reattaches; any other 4001, such as
+   `unsupported_terminal_backend`, shows the host's reason. `enabled: false` says
+   checkpoints are off on the host.
+2. **A catalog skill**: `command.dispatch` expands it and `message` is submitted.
+3. **Any other catalog command or alias**: `slash.exec {session_id, command}`
    with the typed line, once.
-5. **Anything else** is sent as typed.
+4. **Anything else** is sent as typed.
 
 `slash.exec` answers `{output, warning?}` or a directive. Output, warnings and
 notices show as a local notice (pinned while a turn runs), the output in a code

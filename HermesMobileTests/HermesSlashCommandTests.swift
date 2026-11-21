@@ -2,14 +2,7 @@ import XCTest
 import Observation
 @testable import HermesMobile
 
-/// Slash commands in a Hermes chat (#1036), over #901's socket-level host. Replies come
-/// from `Fixtures/HermesAgent/slash-commands.json`, recorded from `scripts/local-hermes`
-/// at the `HERMES_AGENT_TESTED_SHA` pin.
 @MainActor final class HermesSlashCommandTests: XCTestCase {
-    // MARK: Catalog
-
-    /// Command rows are the `pairs` `canon` knows, with their aliases; skills stay apart,
-    /// and an alias finds its command in the panel.
     func testTheRecordedCatalogListsCommandsAliasesAndSkills() throws {
         let catalog = HermesSlashCatalog(try Self.fixture("commands.catalog"))
         let context = try XCTUnwrap(catalog.commands.first { $0.name == "context" })
@@ -22,14 +15,13 @@ import Observation
 
         XCTAssertTrue(catalog.hostArgumentNames.isSuperset(of: ["context", "ctx", "approvals", "hello"]))
         XCTAssertTrue(catalog.hostArgumentNames.isDisjoint(with: ["model", "personality", "undo", "compact", "reset"]),
-                      "Hermex's own and the held commands never ask the host")
+                      "Hermex's own commands never ask the host")
 
         let ranked = AgentSlashCommandSuggestion.matching("ctx", in: catalog.commands, matchingAliases: true)
         XCTAssertEqual(ranked.first?.name, "context")
         XCTAssertEqual(ranked.filter { $0.name == "context" }.count, 1)
     }
 
-    /// A catalog read for an attach that is no longer current is dropped.
     func testAStaleCatalogReplyIsDropped() async throws {
         let chat = await openChat(catalog: false)
         let slash = chat.turn.slashCommands
@@ -40,9 +32,7 @@ import Observation
         XCTAssertFalse(slash.catalog.commands.isEmpty)
     }
 
-    // MARK: Routing
-
-    func testANameRoutesToTheAppTheHoldTheSkillTheHostOrText() async throws {
+    func testANameRoutesToTheAppTheSkillTheHostOrText() async throws {
         let slash = await openChat().turn.slashCommands
         XCTAssertEqual(slash.route("model"), .appOwned(SlashCommandCatalog.hermesCommand(named: "model")!))
         XCTAssertEqual(slash.route("reset"), .appOwned(SlashCommandCatalog.hermesCommand(named: "new")!), "an alias of /new")
@@ -59,6 +49,7 @@ import Observation
         XCTAssertEqual(slash.route("fork"), .appOwned(SlashCommandCatalog.command(named: "fork")!), "#1051")
         XCTAssertEqual(slash.route("workspace"), .appOwned(SlashCommandCatalog.command(named: "workspace")!), "#1673")
         XCTAssertEqual(slash.route("interrupt"), .appOwned(SlashCommandCatalog.command(named: "interrupt")!), "#1673")
+        XCTAssertEqual(slash.route("rollback").appOwnedHandler, .serverSide(.rollback), "#1728")
         XCTAssertEqual(slash.route("demo-skill").isSkill, true)
         XCTAssertEqual(slash.route("context"), .host)
         XCTAssertEqual(slash.route("ctx"), .host)
@@ -66,8 +57,6 @@ import Observation
         XCTAssertEqual(slash.route("notacommand"), .text)
     }
 
-    /// A host command runs once through `slash.exec`, and its output is a notice with its
-    /// line breaks kept. Nothing reaches the model.
     func testAHostCommandShowsTheHostsOutputAsANotice() async throws {
         let chat = await openChat()
         chat.host.always("slash.exec", .init(result: try Self.fixture("slash.exec /hello")))
@@ -80,8 +69,6 @@ import Observation
         XCTAssertEqual(chat.model.messages.map(\.content), ["```text\nhermex-quick\n```"])
     }
 
-    /// `/title` renames the session on its runtime (#1048), never through `slash.exec`, and the
-    /// header takes the title the host kept.
     func testTitleRenamesTheSessionOnItsRuntime() async {
         let chat = await openChat()
         chat.host.always("session.title", .init(result: .object(["pending": .bool(false), "title": .string("Launch plan")])))
@@ -94,8 +81,6 @@ import Observation
         XCTAssertEqual(chat.model.displayTitle, "Launch plan")
     }
 
-    /// A title the host refuses (4022: in use, or over 100 characters) shows its words and keeps
-    /// the draft.
     func testATitleTheHostRefusesShowsItsMessage() async {
         let chat = await openChat()
         let refusal = "Title 'Plan' is already in use by session 20261007_003046_925526"
@@ -107,8 +92,6 @@ import Observation
         XCTAssertEqual(chat.model.sendErrorMessage, refusal)
     }
 
-    /// A skill expands through `command.dispatch`; its prompt goes out once, and the
-    /// transcript shows the typed line, never the expanded skill.
     func testASkillSubmitsItsExpansionUnderTheTypedLine() async throws {
         let chat = await openChat()
         let expansion = try Self.fixture("command.dispatch demo-skill")
@@ -124,7 +107,6 @@ import Observation
         XCTAssertEqual(chat.model.messages.map(\.content), ["/demo-skill do it"])
     }
 
-    /// `/new` opens a new chat in the session's Profile.
     func testNewOpensANewChatInTheProfile() async {
         let chat = await openChat()
         guard case .openedHermesSession(let opened)? = await chat.model.runHermesSlashCommand("/new") else {
@@ -133,15 +115,10 @@ import Observation
         XCTAssertEqual(opened.target, .new(profile: "default"))
     }
 
-    // MARK: Bot Chat (#1145)
-
-    /// A bot's Bot Chat is that bot's one conversation (#1127 decision 3): every command that
-    /// would start, open, rename, branch or rewind a chat is refused with copy before anything
-    /// is sent, aliases included, and `/clear` points at `/compress`.
     func testABotChatRefusesCommandsThatLeaveOrRewriteIt() async {
         let chat = await openChat(target: .canonicalChat(profile: "default"))
         let refused = ["/new", "/reset", "/clear", "/resume Launch plan", "/sessions", "/branch Idea", "/fork",
-                       "/title Renamed", "/undo", "/retry"]
+                       "/title Renamed", "/undo", "/retry", "/rollback 1"]
         let sent = chat.host.requests.count
         for line in refused {
             let result = await chat.model.runHermesSlashCommand(line)
@@ -150,8 +127,6 @@ import Observation
         XCTAssertEqual(chat.host.requests.dropFirst(sent).compactMap { $0["method"].text }, [], "nothing reaches the host")
     }
 
-    /// The panel hides what a Bot Chat refuses, Hermex's and the host's alike, and keeps its side
-    /// commands (`/btw`, `/background`, `/goal`, `/yolo`, `/compress`). A session keeps them all.
     func testABotChatsPanelOffersOnlyWhatItRuns() async {
         let refused: Set<String> = ["new", "clear", "resume", "sessions", "branch", "fork", "title", "undo", "retry"]
         let bot = await openChat(target: .canonicalChat(profile: "default"))
@@ -167,8 +142,6 @@ import Observation
         XCTAssertTrue(Set(session.model.composerAgentCommands.map(\.name)).isSuperset(of: ["new", "title", "branch"]))
     }
 
-    /// A Bot Chat's saved rows offer no Edit, Regenerate or Fork From Here, and its Profile chip
-    /// starts no other chat; a session's same rows offer all three.
     func testABotChatOffersNoRewindForkOrOtherProfile() async throws {
         let rows = [Self.row(1, "user", "Hello"), Self.row(2, "assistant", "Hi there.")]
         let profiles: BotJSON = .object(["profiles": .array([.object(["name": .string("default")]),
@@ -190,9 +163,6 @@ import Observation
         XCTAssertFalse(session.model.composerIsSingleProfileMode)
     }
 
-    /// A Bot Chat row (Archived) opens by its key with Bot Chat's rules, so its compaction follows
-    /// the key as any session's does, and so does a legacy chain's "Bot Chat (continued)" tip;
-    /// every other row opens as a session.
     func testABotChatRowOpensWithBotChatsRules() {
         func opened(_ row: HermesSessionRow) -> HermesSessionChat? {
             row.summary(in: "default").hermesChat(on: URL(string: "https://hermes.example")!, connection: Self.connection,
@@ -210,11 +180,6 @@ import Observation
         XCTAssertEqual(opened(HermesSessionRow(id: "a", title: "Plan"))?.policy, .session)
     }
 
-    // MARK: Sessions (#1053)
-
-    /// `/resume <name>` searches the chat's Profile for the name and opens the one session
-    /// titled exactly that, in any case; a title that only starts with it doesn't count. It opens
-    /// under the row's lineage root, so a compressed scheduled task's run shows its card (#1413).
     func testResumeOpensTheOneSessionTitledExactlyThat() async throws {
         let chat = await openChat(search: [Self.searchResult("20261007_090000_aaaaaa", title: "Launch plan",
                                                              root: "cron_job_20261007_080000"),
@@ -235,9 +200,6 @@ import Observation
         XCTAssertEqual(chat.writes("slash.exec"), [], "the host's own /resume never runs")
     }
 
-    /// Anything but one exact title (none, two in different cases, or a Bot Chat, which opens
-    /// in its bot) opens the Profile's Sessions list searching the name; `/sessions` and a bare
-    /// `/resume` open it unsearched. The host's own commands never run.
     func testResumeWithoutOneExactTitleOpensTheListSearchingIt() async {
         let chat = await openChat(search: [Self.searchResult("a", title: "Launch plan"), Self.searchResult("b", title: "launch PLAN"),
                                            Self.searchResult("c", title: "Bot Chat")])
@@ -257,7 +219,6 @@ import Observation
         XCTAssertEqual(chat.writes("slash.exec"), [])
     }
 
-    /// A chat that is not attached sends nothing and keeps the draft.
     func testAHostCommandWithoutAConnectionIsNotSent() async {
         let chat = await openChat()
         chat.model.suspendStreamForNavigation()
@@ -267,9 +228,6 @@ import Observation
         XCTAssertEqual(chat.writes("slash.exec"), [])
     }
 
-    // MARK: Directives
-
-    /// `send` goes out through the normal send path.
     func testSendSubmitsTheMessage() async throws {
         let chat = await openChat()
         chat.host.always("slash.exec", .init(result: try Self.fixture("slash.exec /queue hi")))
@@ -289,8 +247,6 @@ import Observation
         XCTAssertEqual(chat.writes("prompt.submit"), [])
     }
 
-    /// An alias runs its target once with the typed argument; an alias to another alias is
-    /// refused.
     func testAnAliasRunsItsTargetOnce() async {
         let chat = await openChat()
         chat.host.next("slash.exec", .init(result: .object(["type": .string("alias"), "target": .string("context")])))
@@ -309,8 +265,6 @@ import Observation
         XCTAssertEqual(chat.writes("slash.exec").count, 4)
     }
 
-    /// A refusal shows the host's message and keeps the draft; in a chat with nothing sent
-    /// yet it asks for a message first.
     func testAHostRefusalShowsItsMessage() async throws {
         let refusal = try Self.fixture("slash.exec /steer")
         let reply = BotSocketHost.Reply(error: refusal["code"].integer, message: refusal["message"].text ?? "")
@@ -328,17 +282,121 @@ import Observation
         XCTAssertEqual(unsent.model.sendErrorMessage, "Send a message first, then run /steer.")
     }
 
-    // MARK: Argument completion
+    func testARollbackFilePathKeepsItsSpaces() {
+        XCTAssertEqual(HermesRollbackCommand("1 dir/my  notes.txt"), .restore("1", filePath: "dir/my  notes.txt"))
+    }
 
-    /// Only the newest call's reply is kept, and closing the panel clears it.
+    func testAListedNumberNamesTheCheckpointItShows() throws {
+        let reply = BotJSON.object(["enabled": .bool(true), "checkpoints": .array([
+            .object(["message": .string("no hash")]),
+            .object(["hash": .string("abcdef0123"), "message": .string("before write_file")])
+        ])])
+        let listed = try XCTUnwrap(HermesCheckpoint.list(reply))
+        let shown = try XCTUnwrap(listed.first)
+        XCTAssertEqual(HermesCheckpoint.named(String(shown.number), in: listed)?.hash, "abcdef0123")
+    }
+
+    func testRollbackListsTheRuntimesCheckpoints() async throws {
+        let chat = await openChat()
+        chat.host.always("rollback.list", .init(result: try Self.fixture("rollback.list")))
+        chat.host.always("slash.exec", .init(result: .object(["output": .string("Command refused")])))
+
+        let result = await chat.model.runHermesSlashCommand("/rollback")
+
+        XCTAssertEqual(result, .executed(message: nil))
+        XCTAssertEqual(chat.writes("rollback.list"), [["session_id": .string("runtime")]])
+        XCTAssertEqual(chat.writes("slash.exec"), [])
+        XCTAssertEqual(chat.model.messages.map(\.role), ["local_notice"])
+    }
+
+    func testConfirmingARestoreSendsTheListedHash() async throws {
+        let chat = await openChat()
+        let listed = try Self.fixture("rollback.list")["checkpoints"].list ?? []
+        XCTAssertEqual(listed.count, 2)
+        chat.host.always("rollback.list", .init(result: .object(["enabled": .bool(true), "checkpoints": .array(listed)])))
+        chat.host.always("rollback.restore", .init(result: try Self.fixture("rollback.restore whole tree, nothing rewound")))
+
+        _ = await chat.model.runHermesSlashCommand("/rollback 2 notes.txt")
+        XCTAssertEqual(chat.writes("rollback.restore"), [], "nothing is restored before the user confirms")
+        _ = await chat.model.confirmHermesRollback(try XCTUnwrap(chat.model.pendingHermesRollback))
+        _ = await chat.model.runHermesSlashCommand("/rollback 1")
+        _ = await chat.model.confirmHermesRollback(try XCTUnwrap(chat.model.pendingHermesRollback))
+
+        XCTAssertEqual(chat.writes("rollback.restore"), [
+            ["session_id": .string("runtime"), "hash": listed[1]["hash"], "file_path": .string("notes.txt")],
+            ["session_id": .string("runtime"), "hash": listed[0]["hash"]]
+        ])
+        XCTAssertNil(chat.model.pendingHermesRollback)
+    }
+
+    func testARestoreTheHostCouldNotDoShowsItsError() async throws {
+        let chat = await openChat()
+        let failed = try Self.fixture("rollback.restore unknown hash")
+        chat.host.always("rollback.list", .init(result: try Self.fixture("rollback.list")))
+        chat.host.always("rollback.restore", .init(result: failed))
+
+        _ = await chat.model.runHermesSlashCommand("/rollback 1")
+        let result = await chat.model.confirmHermesRollback(try XCTUnwrap(chat.model.pendingHermesRollback))
+
+        XCTAssertEqual(result, .notDelivered)
+        XCTAssertEqual(chat.model.sendErrorMessage, failed["error"].text)
+    }
+
+    func testCancellingARestoreSendsNothing() async throws {
+        let chat = await openChat()
+        chat.host.always("rollback.list", .init(result: try Self.fixture("rollback.list")))
+
+        _ = await chat.model.runHermesSlashCommand("/rollback 1")
+        XCTAssertNotNil(chat.model.pendingHermesRollback)
+        chat.model.cancelHermesRollback()
+
+        XCTAssertNil(chat.model.pendingHermesRollback)
+        XCTAssertEqual(chat.writes("rollback.restore"), [])
+    }
+
+    func testADiffSendsTheListedHashAndNothingForAnUnknownCheckpoint() async throws {
+        let chat = await openChat()
+        let listed = try Self.fixture("rollback.list")["checkpoints"].list ?? []
+        chat.host.always("rollback.list", .init(result: try Self.fixture("rollback.list")))
+        chat.host.always("rollback.diff", .init(result: .object(["stat": .string(""), "diff": .string("")])))
+
+        for unknown in ["/rollback diff 9", "/rollback diff deadbeef"] {
+            let result = await chat.model.runHermesSlashCommand(unknown)
+            XCTAssertEqual(result, .notDelivered, unknown)
+        }
+        XCTAssertEqual(chat.writes("rollback.diff"), [])
+
+        _ = await chat.model.runHermesSlashCommand("/rollback diff 2")
+        XCTAssertEqual(chat.writes("rollback.diff").map { $0["hash"] }, [listed[1]["hash"]])
+    }
+
+    func testOnlyAGoneRuntimeReattachesOnARollbackRefusal() async throws {
+        let chat = await openChat()
+        let resumes = { chat.writes("session.resume").count }
+        let attached = resumes()
+
+        chat.host.next("rollback.list", .init(error: 4001, message: "unsupported_terminal_backend"))
+        let refused = await chat.model.runHermesSlashCommand("/rollback")
+        await chat.turn.activate()
+        XCTAssertEqual(refused, .notDelivered)
+        XCTAssertEqual(chat.model.sendErrorMessage, "unsupported_terminal_backend")
+        XCTAssertEqual(resumes(), attached, "no reattach")
+
+        for gone in ["not_found", "session not found"] {
+            let before = resumes()
+            chat.host.next("rollback.list", .init(error: 4001, message: gone))
+            _ = await chat.model.runHermesSlashCommand("/rollback")
+            await chat.turn.activate()
+            XCTAssertGreaterThan(resumes(), before, gone)
+        }
+    }
+
     func testOnlyTheNewestCompletionApplies() async throws {
         let chat = await openChat()
         let slash = chat.turn.slashCommands
         slash.completionDelay = .milliseconds(1)
         chat.host.always("complete.slash", .init(result: try Self.fixture("complete.slash /approvals ")))
 
-        // The newer call's task can't start until the older call, run inline on the main actor,
-        // has taken its revision and paused (#1263); the two replies then land in either order.
         let newer = Task { await slash.complete("/approvals ") }
         await slash.complete("/approvals x")
         await newer.value
@@ -351,8 +409,6 @@ import Observation
         XCTAssertNil(slash.completion)
     }
 
-    /// Suggestions fit only while just the completed word follows their head, so a pick
-    /// never deletes words typed after them.
     func testSuggestionsFitOnlyTheWordTheyComplete() {
         let completion = HermesSlashCompletion(text: "/queue ", items: [.init(text: "list", display: "list", meta: "")],
                                                replaceFrom: 7)
@@ -363,7 +419,6 @@ import Observation
         XCTAssertEqual(completion.applying(completion.items[0]), "/queue list")
     }
 
-    /// Typing within the pause sends one request, for the latest text.
     func testCompletionWaitsForAPauseInTyping() async throws {
         let chat = await openChat()
         let slash = chat.turn.slashCommands
@@ -377,15 +432,12 @@ import Observation
         XCTAssertEqual(chat.writes("complete.slash"), [["text": .string("/approvals "), "session_id": .string("runtime")]])
     }
 
-    // MARK: Fixture
-
     private static let connection = BotConnection(id: UUID(), name: "Mac", address: URL(string: "http://hermes.local:9120")!,
                                                   username: "user", password: "fixture")
 
     private static let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         .appendingPathComponent("Fixtures/HermesAgent/slash-commands.json")
 
-    /// One recorded reply by its key.
     private static func fixture(_ key: String) throws -> BotJSON {
         guard let data = try? Data(contentsOf: fixtures) else {
             throw XCTSkip("Could not read \(fixtures.path); the source tree is not present (physical device or remote runner).")
@@ -400,29 +452,22 @@ import Observation
         let turn: HermesChatTurnCoordinator
         let host: BotSocketHost
 
-        /// The params of every `method` call the chat sent.
         func writes(_ method: String) -> [[String: BotJSON]] {
             host.requests.filter { $0["method"].text == method }.compactMap { $0["params"].fields }
         }
     }
 
-    /// One saved transcript row on `tip` (#1047).
     private static func row(_ id: Int, _ role: String, _ content: String) -> BotJSON {
         .object(["id": .number(Double(id)), "session_id": .string("tip"), "role": .string(role),
                  "content": .string(content), "timestamp": .number(1_790_000_000 + Double(id)), "active": .number(1)])
     }
 
-    /// One `GET /api/sessions/search` id match in the pin's shape (#1053).
     private static func searchResult(_ id: String, title: String, root: String? = nil) -> BotJSON {
         .object(["snippet": .string("Session ID: \(id)"), "role": .null, "session_id": .string(id), "id": .string(id),
                  "lineage_root": .string(root ?? id), "profile": .string("default"), "title": .string(title),
                  "last_active": .number(1_791_400_927), "started_at": .number(1_791_400_926), "archived": .bool(false)])
     }
 
-    /// A Hermes chat attached to an idle session on `runtime`, whose transcript page holds
-    /// `messages` (#1047) and whose Profile's search answers `search` (#1053), with the
-    /// recorded catalog read unless `catalog` is false. `profiles` answers `profiles.list`; a
-    /// `.canonicalChat` target's title lookup finds root `root` at tip `tip`.
     private func openChat(messages: [BotJSON] = [], search: [BotJSON] = [], catalog: Bool = true,
                           target: ConversationTarget = .session(profile: "default", key: "tip"),
                           profiles: BotJSON? = nil) async -> Chat {
@@ -463,8 +508,6 @@ import Observation
 
 private extension HermesSlashRoute {
     var isSkill: Bool { if case .skill = self { return true }; return false }
-    /// The handler of an app-owned command; nil for any other route.
     var appOwnedHandler: SlashCommandHandler? { if case .appOwned(let command) = self { return command.handler }; return nil }
-    /// The name of an app-owned command; nil for any other route.
     var appOwnedName: String? { if case .appOwned(let command) = self { return command.name }; return nil }
 }

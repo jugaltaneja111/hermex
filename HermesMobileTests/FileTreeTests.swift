@@ -1,7 +1,6 @@
 import XCTest
 @testable import HermesMobile
 
-/// Pure tree behaviour for the workspace file browser: ordering, lazy structure, search.
 final class FileTreeTests: XCTestCase {
 
     private func dir(_ name: String, path: String? = nil) -> WorkspaceEntry {
@@ -12,7 +11,6 @@ final class FileTreeTests: XCTestCase {
         WorkspaceEntry(name: name, path: path ?? name, type: "file", size: 1, isDirectory: false)
     }
 
-    /// src/{Chat/{ChatView.swift}, Util/{Math.swift}}, README.md — every directory listed.
     private func sampleTree() -> FileTree {
         var tree = FileTree()
         tree.setChildren([file("README.md"), dir("src")], of: FileTree.rootPath)
@@ -26,8 +24,6 @@ final class FileTreeTests: XCTestCase {
         nodes.map(\.node.path)
     }
 
-    // MARK: - Structure
-
     func testSortsDirectoriesFirstThenNaturalOrder() {
         var tree = FileTree()
         tree.setChildren([file("file10.txt"), file("file2.txt"), dir("Zeta"), file("Beta.txt"), dir("alpha")], of: FileTree.rootPath)
@@ -38,13 +34,24 @@ final class FileTreeTests: XCTestCase {
     func testNodePathFallsBackToParentAndNameAndSkipsBlankEntries() {
         var tree = FileTree()
         tree.setChildren([
-            WorkspaceEntry(name: "notes.txt", path: nil),
-            WorkspaceEntry(name: nil, path: nil)
+            WorkspaceEntry(name: " notes.txt ", path: nil),
+            WorkspaceEntry(name: nil, path: nil),
+            WorkspaceEntry(name: " ", path: "\t")
         ], of: "docs")
 
-        XCTAssertEqual(tree.children(of: "docs")?.map(\.path), ["docs/notes.txt"])
-        XCTAssertEqual(tree.node(at: "docs/notes.txt")?.name, "notes.txt")
-        XCTAssertEqual(tree.node(at: "docs/notes.txt")?.entry.path, "docs/notes.txt", "The preview reads the entry's path")
+        XCTAssertEqual(tree.children(of: "docs")?.map(\.path), ["docs/ notes.txt "])
+        XCTAssertEqual(tree.node(at: "docs/ notes.txt ")?.name, " notes.txt ")
+        XCTAssertEqual(tree.node(at: "docs/ notes.txt ")?.entry.path, "docs/ notes.txt ", "The preview reads the entry's path")
+    }
+
+    func testSiblingFilenamesCanDifferOnlyByLeadingOrTrailingSpaces() {
+        let names = ["report.txt", " report.txt", "report.txt "]
+        var tree = FileTree()
+        tree.setChildren(names.map { WorkspaceEntry(name: nil, path: $0) }, of: FileTree.rootPath)
+
+        for name in names {
+            XCTAssertEqual(tree.node(at: name)?.name, name)
+        }
     }
 
     func testSymlinkKeepsDirectoryFlagFromServer() {
@@ -71,8 +78,6 @@ final class FileTreeTests: XCTestCase {
         XCTAssertFalse(tree.isLoaded("src/Util"))
     }
 
-    // MARK: - Flattening
-
     func testFlattenShowsChildrenOnlyOfExpandedDirectories() {
         let tree = sampleTree()
 
@@ -83,8 +88,6 @@ final class FileTreeTests: XCTestCase {
         XCTAssertEqual(paths(deep), ["src", "src/Chat", "src/Util", "src/Util/Math.swift", "README.md"])
         XCTAssertEqual(deep.map(\.depth), [0, 1, 1, 2, 0])
     }
-
-    // MARK: - Search
 
     func testSearchKeepsAncestorsOfMatchesAndTraversesCollapsedFolders() {
         let tree = sampleTree()

@@ -1,7 +1,5 @@
 import SwiftUI
 
-/// Settings › About › Usage Reports (#1662): the device-wide switch, what it sends, and what
-/// turning it off can't undo.
 struct SettingsUsageReportsPage: View {
     @AppStorage(UsageReports.Keys.acceptedVersion) private var acceptedVersion: Int?
 
@@ -28,13 +26,12 @@ struct SettingsUsageReportsPage: View {
     }
 }
 
-/// The preview as the consent card's sheet.
 struct UsageReportPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            UsageReportPreview()
+            UsageReportPreview(asking: true)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button(String(localized: "Done")) { dismiss() }
@@ -44,10 +41,8 @@ struct UsageReportPreviewSheet: View {
     }
 }
 
-/// Every field of a usage report, grouped like the wire format (#1659). Before consent it is a
-/// labelled example: real device, server and report values, sample weekly counts. After
-/// consent it is this week so far, from the builder the sender uses.
 struct UsageReportPreview: View {
+    var asking = false
     @AppStorage(UsageReports.Keys.acceptedVersion) private var acceptedVersion: Int?
     @Environment(\.scenePhase) private var scenePhase
     @State private var report: UsageReport?
@@ -59,6 +54,8 @@ struct UsageReportPreview: View {
             Section {
                 (isExample
                     ? Text("Example report. Nothing is recorded until you allow usage reports. This iPhone, Servers and Report show real values; the weekly counts are samples.")
+                    : asking
+                    ? Text("This week so far, in the newer format. Until you allow it, Hermex keeps sending the summary you already allowed.")
                     : Text("This week so far, built by the same code that sends it. It goes to the developer the first time you open Hermex after the week ends (Monday, UTC)."))
                     .font(AppFont.footnote())
                     .foregroundStyle(isExample ? Color.black : Color(.secondaryLabel))
@@ -80,11 +77,9 @@ struct UsageReportPreview: View {
             }
         }
         .settingsPage(String(localized: "What’s Sent"))
-        // A return to the app may be in a new week, which the foreground send has just rolled over.
         .task(id: PreviewKey(acceptedVersion: acceptedVersion, isActive: scenePhase == .active)) {
             guard scenePhase == .active else { return }
-            let preview = await UsageReports.shared.preview()
-            // A newer key (an answer, a return to the app) has its own task; a stale one doesn't overwrite it.
+            let preview = await UsageReports.shared.preview(asking: asking)
             guard !Task.isCancelled else { return }
             report = preview
         }
@@ -111,11 +106,14 @@ struct UsageReportPreview: View {
             LabeledContent { Text(report.servers.webui, format: .number) } label: { Text(verbatim: "webui") }
             ForEach(Array(report.servers.versions.enumerated()), id: \.offset) { _, server in
                 value(server.kind == .hermes ? "Hermes version" : "webui version", server.version)
+                if let gateway = server.gateway {
+                    value(server.kind == .hermes ? "Hermes gateway" : "webui gateway", gateway.rawValue)
+                }
             }
         } header: {
             Text("Servers")
         } appFooter: {
-            Text("Kinds and release numbers only. A custom version string shows as other.")
+            Text("Kinds, gateways and release numbers only. A custom version string shows as other.")
         }
 
         Section {
@@ -159,12 +157,10 @@ struct UsageReportPreview: View {
         let isActive: Bool
     }
 
-    /// A row whose value is the report's own text, shown exactly as sent.
     private func value(_ title: LocalizedStringKey, _ value: String) -> some View {
         LabeledContent(title) { Text(verbatim: value) }
     }
 
-    /// A weekly section's header, tagged Sample on the example.
     private func header(_ title: LocalizedStringKey) -> some View {
         HStack(spacing: 6) {
             Text(title)
@@ -180,7 +176,6 @@ struct UsageReportPreview: View {
         }
     }
 
-    /// Every flag the report carries for the card, each on its own.
     private static func summary(_ card: UsageCardTally) -> String {
         var parts = [card.shown ? String(localized: "Shown") : String(localized: "Not shown")]
         if card.dismissed { parts.append(String(localized: "closed")) }
