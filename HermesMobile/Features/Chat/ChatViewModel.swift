@@ -2109,6 +2109,16 @@ final class ChatViewModel {
         )
     }
 
+    func speakLatestReply() -> Bool {
+        guard let index = messages.lastIndex(where: { $0.role == "assistant" && !($0.content ?? "").isEmpty }),
+              messages[index...].allSatisfy({ $0.role != "user" }),
+              let context = actionContext(for: messages[index], visibleIndex: index),
+              context.listenText?.isEmpty == false else { return false }
+        if listeningMessageID == context.messageID { return true }
+        toggleListening(to: context)
+        return listeningMessageID == context.messageID
+    }
+
     func transcriptMessagesAfter(_ context: MessageActionContext) -> Int {
         guard let index = displayedTranscriptMessages.firstIndex(where: { $0.message.id == context.messageID }) else { return 0 }
         return max(0, displayedTranscriptMessages.count - 1 - index)

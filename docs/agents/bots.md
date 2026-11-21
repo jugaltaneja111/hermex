@@ -728,6 +728,14 @@ nothing fails. The host's `{detail}` is the failure Server first falls back on-d
 from. There is no capability probe, because `/api/audio/voice-config` returns provider
 keys.
 
+Talk (the waveform button in a Hermes chat's toolbar) is a hands-free loop over the
+same pieces: it records on the phone until a pause, transcribes with the same
+`POST /api/audio/transcribe`, sends the transcript through the chat's normal send
+path, speaks the finished reply with Listen, and listens again. Interrupt stops the
+reply; End Talk, leaving the chat or backgrounding the app ends the loop. It is
+disabled while a reply runs or the composer holds a draft, so a typed draft is never
+replaced. `docs/adr/0182-talk-mode.md` has the decisions.
+
 A bot's chat keeps its draft under the `.bot` key: server + connection UUID + Profile.
 After uploads finish, immediately before prompt submission, the client flushes an
 unresolved marker to disk. Upload interruptions never mark a draft ambiguous. An acknowledged

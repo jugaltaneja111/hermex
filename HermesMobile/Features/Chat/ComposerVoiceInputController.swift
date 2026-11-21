@@ -1367,7 +1367,7 @@ protocol ComposerServerRecording: AnyObject {
 }
 
 @MainActor
-private final class ComposerServerAudioRecorder: NSObject, ComposerServerRecording, AVAudioRecorderDelegate {
+final class ComposerServerAudioRecorder: NSObject, ComposerServerRecording, AVAudioRecorderDelegate {
     var onFinish: (() -> Void)?
     private var recorder: AVAudioRecorder?
     private var ownsAudioSession = false

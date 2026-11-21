@@ -31,6 +31,7 @@
 		E1629000000000000000A007 /* ConnectedAppsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1629000000000000000A008 /* ConnectedAppsModelTests.swift */; };
 		E170000000000000000004B1 /* MCPServersModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E170000000000000000004B2 /* MCPServersModelTests.swift */; };
 		E170000000000000000005B1 /* SkillsHubModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E170000000000000000005B2 /* SkillsHubModelTests.swift */; };
+		E170000000000000000009B1 /* TalkModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E170000000000000000009B2 /* TalkModeTests.swift */; };
 		E1318000000000000000A009 /* APIKeyEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1318000000000000000A010 /* APIKeyEditor.swift */; };
 		E1318000000000000000A007 /* APIKeysView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1318000000000000000A008 /* APIKeysView.swift */; };
 		E1629000000000000000A005 /* ConnectedAppsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1629000000000000000A006 /* ConnectedAppsView.swift */; };
@@ -461,6 +462,7 @@
 		C03250000000000000B102 /* APIClient+Transcribe.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03250000000000000F102 /* APIClient+Transcribe.swift */; };
 		C03250000000000000B103 /* MultipartFormData.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03250000000000000F103 /* MultipartFormData.swift */; };
 		C03250000000000000B104 /* ComposerVoiceNoteRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03250000000000000F104 /* ComposerVoiceNoteRecorder.swift */; };
+		E170000000000000000008B1 /* TalkMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = E170000000000000000008B2 /* TalkMode.swift */; };
 		C03250000000000000B105 /* APIClientTranscribeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03250000000000000F105 /* APIClientTranscribeTests.swift */; };
 		C03250000000000000B106 /* ComposerVoiceNoteRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03250000000000000F106 /* ComposerVoiceNoteRecorderTests.swift */; };
 		C03251000000000000B106 /* ComposerVoiceInputServerRecordingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03251000000000000F106 /* ComposerVoiceInputServerRecordingTests.swift */; };
@@ -815,6 +817,7 @@
 		E1629000000000000000A008 /* ConnectedAppsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectedAppsModelTests.swift; sourceTree = "<group>"; };
 		E170000000000000000004B2 /* MCPServersModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServersModelTests.swift; sourceTree = "<group>"; };
 		E170000000000000000005B2 /* SkillsHubModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsHubModelTests.swift; sourceTree = "<group>"; };
+		E170000000000000000009B2 /* TalkModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkModeTests.swift; sourceTree = "<group>"; };
 		E1318000000000000000A008 /* APIKeysView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeysView.swift; sourceTree = "<group>"; };
 		E1629000000000000000A006 /* ConnectedAppsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectedAppsView.swift; sourceTree = "<group>"; };
 		E170000000000000000003B2 /* MCPServersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServersView.swift; sourceTree = "<group>"; };
@@ -1232,6 +1235,7 @@
 		C03250000000000000F102 /* APIClient+Transcribe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "APIClient+Transcribe.swift"; sourceTree = "<group>"; };
 		C03250000000000000F103 /* MultipartFormData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultipartFormData.swift; sourceTree = "<group>"; };
 		C03250000000000000F104 /* ComposerVoiceNoteRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerVoiceNoteRecorder.swift; sourceTree = "<group>"; };
+		E170000000000000000008B2 /* TalkMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkMode.swift; sourceTree = "<group>"; };
 		C03250000000000000F105 /* APIClientTranscribeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClientTranscribeTests.swift; sourceTree = "<group>"; };
 		C03250000000000000F106 /* ComposerVoiceNoteRecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerVoiceNoteRecorderTests.swift; sourceTree = "<group>"; };
 		C03251000000000000F106 /* ComposerVoiceInputServerRecordingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerVoiceInputServerRecordingTests.swift; sourceTree = "<group>"; };
@@ -1672,6 +1676,7 @@
 				E1629000000000000000A008 /* ConnectedAppsModelTests.swift */,
 				E170000000000000000004B2 /* MCPServersModelTests.swift */,
 				E170000000000000000005B2 /* SkillsHubModelTests.swift */,
+				E170000000000000000009B2 /* TalkModeTests.swift */,
 				E1112000000000000000A004 /* HermesWorkspaceFileClientTests.swift */,
 				E1075000000000000000A00A /* HermesUpdateClientTests.swift */,
 				E1075000000000000000A008 /* HermesUpdateMachineTests.swift */,
@@ -2282,6 +2287,7 @@
 					1A2B3C4D5E6F7000000000D5 /* ChatViewModel.swift */,
 				A710739233F64F4FA4C2B710 /* ComposerVoiceInputController.swift */,
 				C03250000000000000F104 /* ComposerVoiceNoteRecorder.swift */,
+				E170000000000000000008B2 /* TalkMode.swift */,
 				1A2B3C4D5E6F70000000121 /* ContextWindowIndicatorView.swift */,
 				5DA59130ED4141049177576C /* SlashCommand.swift */,
 				1AB43F55AB4F4262963E6A6E /* SlashCommandCatalog.swift */,
@@ -2986,6 +2992,7 @@
 				C03270000000000000B101 /* APIClient+SessionExport.swift in Sources */,
 				C03250000000000000B103 /* MultipartFormData.swift in Sources */,
 				C03250000000000000B104 /* ComposerVoiceNoteRecorder.swift in Sources */,
+				E170000000000000000008B1 /* TalkMode.swift in Sources */,
 				1A2B3C4D5E6F7000000000A3 /* APIError.swift in Sources */,
 				C04400000000000000000001 /* CacheFallbackPolicy.swift in Sources */,
 				C86900000000000000000001 /* NetworkPathMonitor.swift in Sources */,
@@ -3291,6 +3298,7 @@
 				E1629000000000000000A007 /* ConnectedAppsModelTests.swift in Sources */,
 				E170000000000000000004B1 /* MCPServersModelTests.swift in Sources */,
 				E170000000000000000005B1 /* SkillsHubModelTests.swift in Sources */,
+				E170000000000000000009B1 /* TalkModeTests.swift in Sources */,
 				E1112000000000000000A003 /* HermesWorkspaceFileClientTests.swift in Sources */,
 				E1075000000000000000A009 /* HermesUpdateClientTests.swift in Sources */,
 				E1075000000000000000A007 /* HermesUpdateMachineTests.swift in Sources */,

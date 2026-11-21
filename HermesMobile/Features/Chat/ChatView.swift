@@ -322,6 +322,7 @@ struct ChatView: View {
     let onOpenHermesSessions: ((HermesSessionListEntry) -> Void)?
 
     @State private var draftMessage = ""
+    @State private var talk = TalkModeController()
     @State private var draftQuotes: [ComposerQuote] = []
     @State private var draftRevision = 0
     @State private var isScrolledNearBottom = true
@@ -1004,6 +1005,12 @@ struct ChatView: View {
                     .padding(.horizontal, 24)
                     .padding(.bottom, composerHeight + 8)
                     .zIndex(9)
+
+                talkOverlay
+                    .frame(maxWidth: 420)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, composerHeight + 8)
+                    .zIndex(10)
             }
         }
         .overlay(alignment: .top) {
@@ -1035,7 +1042,11 @@ struct ChatView: View {
             .onChange(of: NetworkPathMonitor.shared.changeCount) {
                 handleNetworkPathChange()
             }
+            .onChange(of: viewModel.listeningMessageID) {
+                if viewModel.listeningMessageID == nil { talk.speakingFinished() }
+            }
             .onChange(of: viewModel.activeStreamID) {
+                if viewModel.activeStreamID == nil { talk.replyFinished() }
                 if viewModel.activeStreamID != nil, let previousTurnKey = viewModel.latestRunOutcome?.turnKey {
                     viewModel.expandedTurnKeys.remove(previousTurnKey)
                 }
@@ -1070,6 +1081,7 @@ struct ChatView: View {
             }
             .onDisappear {
                 isOnScreen = false
+                talk.end()
                 ScreenShortcut.shared.withdraw(viewID)
                 toastState.dismiss()
                 composerFocusRevision += 1
@@ -1158,6 +1170,7 @@ struct ChatView: View {
                     if showsTrailingActions {
                         ToolbarItem(placement: .topBarTrailing) {
                             ChatToolbarActionCluster {
+                                if showsTalkButton { ChatToolbarActionSlot { talkButton } }
                                 if showsBotChatSettingsButton { ChatToolbarActionSlot { botChatSettingsButton } }
                                 if viewModel.showsGoalControls { ChatToolbarActionSlot { goalControlMenu } }
                                 if showsFilesLink { ChatToolbarActionSlot { filesLink } }
@@ -2057,8 +2070,52 @@ struct ChatView: View {
 
     private var showsGitMenu: Bool { showsGitControls && gitAvailabilityViewModel.hasRepository }
 
+    private var showsTalkButton: Bool {
+        isHermesSession && hermesTranscriber != nil && !viewModel.isViewingCachedData
+    }
+
+    private var talkButton: some View {
+        Button(action: startTalk) {
+            Label("Talk", systemImage: "waveform")
+        }
+        .disabled(talk.isActive || viewModel.activeStreamID != nil
+                  || !draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .accessibilityLabel("Talk")
+    }
+
+    @ViewBuilder
+    private var talkOverlay: some View {
+        if talk.isActive {
+            TalkModeBar(talk: talk)
+                .transition(ChatMotion.bottomOverlayTransition(reduceMotion: reduceMotion))
+        } else if let error = talk.errorMessage {
+            ComposerVoiceStatusView(
+                status: ComposerVoiceStatus(text: error, systemImage: "exclamationmark.triangle", isError: true),
+                onDismiss: talk.dismissError
+            )
+            .padding(.horizontal, 12)
+            .background(.regularMaterial, in: Capsule())
+        }
+    }
+
+    private func startTalk() {
+        guard let hermesTranscriber, !talk.isActive else { return }
+        talk.transcribe = hermesTranscriber
+        talk.send = { text in
+            draftMessage = text
+            await sendDraftMessage(behavior: nil)
+            return draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        talk.isReplyRunning = { viewModel.activeStreamID != nil }
+        talk.speakLatestReply = { viewModel.speakLatestReply() }
+        talk.stopSpeaking = { viewModel.stopListening() }
+        composerIsFocused = false
+        viewModel.stopListening()
+        talk.start()
+    }
+
     private var showsTrailingActions: Bool {
-        showsBotChatSettingsButton || viewModel.showsGoalControls || showsFilesLink || showsGitMenu
+        showsTalkButton || showsBotChatSettingsButton || viewModel.showsGoalControls || showsFilesLink || showsGitMenu
             || screenShortcut != nil
     }
 
@@ -2087,6 +2144,9 @@ struct ChatView: View {
     @available(iOS 27.1, *)
     @ToolbarContentBuilder
     private var chatActionRailItems: some ToolbarContent {
+        if showsTalkButton {
+            ToolbarItem(placement: .topBarTrailing) { talkButton }
+        }
         if showsBotChatSettingsButton {
             ToolbarItem(placement: .topBarTrailing) { botChatSettingsButton }
         }
@@ -3687,6 +3747,7 @@ struct ChatView: View {
     private func handleScenePhaseChange(_ phase: ScenePhase) {
         if phase != .active {
             flushDraftsBestEffort()
+            talk.end()
         }
 
         switch phase {
