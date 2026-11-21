@@ -1,10 +1,8 @@
 import XCTest
 import Observation
+import SwiftData
 @testable import HermesMobile
 
-/// A Hermes session's row actions (#1048) on the scripted gateway: a real `BotClient` and
-/// `HermesGateway` over `BotSocketHost`'s socket, and `HermesHostFixture` for REST, in the shapes
-/// `scripts/local-hermes` answered at the 0.21.5 pin.
 @MainActor final class HermesSessionActionsTests: XCTestCase {
     private let server = URL(string: "https://hermes.example")!
     private let record = BotConnection(id: UUID(), name: "Mac", address: URL(string: "https://hermes.example")!,
@@ -24,10 +22,6 @@ import Observation
         super.tearDown()
     }
 
-    // MARK: Delete
-
-    /// A runtime this phone attached (a chat it opened and left) blocks the host's delete, so an
-    /// idle one is closed first, then the stored session goes, under its Profile.
     func testDeleteClosesThisPhonesIdleRuntimeThenDeletesTheSession() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -52,9 +46,6 @@ import Observation
         XCTAssertFalse(connection.attachedRuntimes.contains("runtime"), "a closed runtime is no longer this phone's")
     }
 
-    /// On a canonical host (#1603) a delete is one fenced `delete` edit, under the revision and
-    /// generation an identity resume reads; no runtime is closed. One the host refuses while a reply
-    /// runs (recorded `session_busy`) keeps the row, and the next succeeds.
     func testACanonicalDeleteIsOneFencedEditAndClosesNoRuntime() async throws {
         let recorded = try canonicalMutations()
         let host = BotSocketHost()
@@ -85,7 +76,6 @@ import Observation
         XCTAssertFalse(list.sessions.contains { $0.sessionId == "tip" })
     }
 
-    /// A reply still running on this phone's runtime refuses the delete before anything is sent.
     func testABusyRuntimeOnThisPhoneRefusesTheDelete() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -103,8 +93,6 @@ import Observation
         XCTAssertEqual(list.sessions.map(\.sessionId), ["tip"])
     }
 
-    /// A runtime this phone never attached is another app's: it is left alone, the host refuses
-    /// (4023), and the row stays.
     func testASessionOpenInAnotherAppIsRefusedWithNothingChanged() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -125,10 +113,6 @@ import Observation
         XCTAssertEqual(list.sessions.map(\.sessionId), ["tip"])
     }
 
-    // MARK: Rename
-
-    /// The rename sheet keeps the host's reason and the row keeps its title; a title the host
-    /// takes is shown as the host cleaned it.
     func testARefusedRenameStaysInTheSheetAndATakenOneShowsTheHostsTitle() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -156,9 +140,6 @@ import Observation
         XCTAssertEqual(list.sessions.first?.title, "Probe B two")
     }
 
-    // MARK: Pin and archive
-
-    /// An archive shows at once and puts the row back where it stood when the host refuses.
     func testARefusedArchivePutsTheRowBackInPlace() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -183,9 +164,6 @@ import Observation
         XCTAssertNotNil(list.actionErrorMessage)
     }
 
-    /// An archive the host answers after the list's client closed (the app left mid-request) may
-    /// have landed, so the row stays gone with no alert and no Undo, rather than coming back as
-    /// refused.
     func testAnArchiveAnsweredAfterTheListClosedIsNotRolledBack() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -209,8 +187,6 @@ import Observation
         XCTAssertNil(list.actionErrorMessage)
     }
 
-    /// A pin the host refuses after the list moved to another Profile stays out of that
-    /// Profile's rows; the refusal is still shown.
     func testARefusalAfterAProfileSwitchLeavesTheNewProfilesRows() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -243,11 +219,6 @@ import Observation
         XCTAssertNotNil(list.actionErrorMessage)
     }
 
-    // MARK: Archived screen
-
-    /// The Archived page keeps only archived rows: a hidden Bot Chat is listed under its bot's
-    /// Profile, and the non-archived pinned row the host back-fills is dropped. Restoring the Bot
-    /// Chat writes `archived: false` under its Profile.
     func testTheArchivedScreenListsABotChatDropsTheBackFilledPinAndRestores() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -287,9 +258,49 @@ import Observation
         XCTAssertEqual(archive.sessions.map(\.sessionId), ["old"])
     }
 
-    /// The Archived screen leaves a Profile's room sessions out, since a regular chat must never
-    /// open one, and a Bot Chat row opens in its bot through the bot route rather than by its key
-    /// (#1146).
+    func testDeletingAnArchivedBotChatClearsItsOwnCachedTranscriptOnly() async throws {
+        let host = BotSocketHost()
+        let connection = host.connection(record)
+        let page = BotJSON.object(["sessions": .array([
+            .object(["id": .string("bot"), "title": .string("Bot Chat"), "archived": .bool(true), "hidden": .number(1)])
+        ])])
+        _ = HermesHostFixture.configuration { request in
+            if let empty = HermesHostFixture.emptyScheduledPage(request) { return empty }
+            guard request.httpMethod == "GET", request.url?.path == "/api/sessions" else { return nil }
+            return .json(200, page)
+        }
+        host.always("session.active_list", .init(result: .object(["sessions": .array([])])))
+        host.always("session.delete", .init(result: .object(["deleted": .string("bot")])))
+        let context = ModelContext(try ModelContainer(for: CachedSession.self, CachedMessage.self,
+                                                      configurations: ModelConfiguration(isStoredInMemoryOnly: true)))
+        let message = ChatMessage(role: "user", content: "Hi", timestamp: 1, messageId: "m", rowID: 1)
+        let other = UUID()
+        let scopes = [
+            ("bot", CacheStore.hermesBotChatScope(connectionID: record.id, profile: "research", root: "bot")),
+            ("archive", CacheStore.hermesArchivedBotChatScope(connectionID: record.id, profile: "research", root: "bot")),
+            ("root", CacheStore.hermesBotChatScope(connectionID: record.id, profile: "research", root: "kept")),
+            ("profile", CacheStore.hermesBotChatScope(connectionID: record.id, profile: "other", root: "bot")),
+            ("connection", CacheStore.hermesBotChatScope(connectionID: other, profile: "research", root: "bot"))
+        ]
+        for (_, scope) in scopes {
+            try CacheStore.cacheHermesMessages([message], newestCoverage: .all, serverURL: server, scope: scope, in: context)
+        }
+        let archive = ArchivedSessionsViewModel(server: server, hermes: HermesArchiveSource(
+            connection: record, profile: "research", makeWire: { _ in BotClient(http: connection) }, preferences: defaults
+        ))
+        await archive.load()
+        let epoch = CacheStore.hermesCacheEpoch(serverURL: server)
+
+        let deleted = await archive.delete(try XCTUnwrap(archive.sessions.first), modelContext: context)
+
+        XCTAssertTrue(deleted)
+        let cached = { (scope: String) in try CacheStore.cachedHermesMessages(serverURL: self.server, scope: scope, in: context, limit: 100).count }
+        XCTAssertEqual(try scopes.map { try cached($0.1) }, [0, 0, 1, 1, 1])
+        XCTAssertEqual(try CacheStore.cachedHermesBotChatRoot(serverURL: server, connectionID: record.id, profile: "research", in: context),
+                       "kept")
+        XCTAssertNotEqual(CacheStore.hermesCacheEpoch(serverURL: server), epoch)
+    }
+
     func testArchivedRoomSessionsAreLeftOutAndABotChatRowOpensItsBot() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -321,8 +332,6 @@ import Observation
         XCTAssertEqual(archive.hermesChat(for: plain)?.target, .session(profile: "research", key: "old"))
     }
 
-    /// A first page of room sessions alone shows nothing, so the screen reads on (#1146): the
-    /// archived row on the next page appears, rather than "No archived sessions".
     func testArchivedReadsPastAFirstPageOfRoomsAlone() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -346,8 +355,6 @@ import Observation
         XCTAssertFalse(archive.hasMore)
     }
 
-    /// Load more waits out a restore still on its way to the host, whose rows it would shift,
-    /// so every other archived row is still reached once the restore lands.
     func testLoadMoreDuringARestoreSkipsNoRow() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -385,8 +392,31 @@ import Observation
         XCTAssertEqual(archive.sessions.count, 200)
     }
 
-    /// A refresh that lands while a restore waits, still listing the row, doesn't bring it
-    /// back, before or after the host takes the restore.
+    func testACancelledPageReadShowsNoError() async throws {
+        let host = BotSocketHost()
+        let connection = host.connection(record)
+        let archived = (0...150).map { "s\($0)" }
+        _ = HermesHostFixture.configuration { request in
+            if let empty = HermesHostFixture.emptyScheduledPage(request) { return empty }
+            guard request.httpMethod == "GET", request.url?.path == "/api/sessions" else { return nil }
+            let query = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
+            let offset = Int(query.first { $0.name == "offset" }?.value ?? "") ?? 0
+            let rows = archived.dropFirst(offset).prefix(HermesREST.sessionPageSize)
+            return .json(200, .object(["sessions": .array(rows.map { .object(["id": .string($0), "archived": .bool(true)]) })]))
+        }
+        let archive = ArchivedSessionsViewModel(server: server, hermes: HermesArchiveSource(
+            connection: record, profile: "default", makeWire: { _ in BotClient(http: connection) }, preferences: defaults
+        ))
+        await archive.load()
+        XCTAssertTrue(archive.hasMore)
+
+        let read = Task { await archive.loadMore() }
+        read.cancel()
+        await read.value
+
+        XCTAssertNil(archive.actionErrorMessage)
+    }
+
     func testARefreshDuringARestoreDoesNotBringTheRowBack() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -418,8 +448,6 @@ import Observation
         XCTAssertEqual(archive.sessions.map(\.sessionId), ["a", "c"])
     }
 
-    /// A restore the host refuses after a refresh replaced the pages leaves the refreshed pages
-    /// as the host listed them, so Load more still reaches every archived row, in order.
     func testARestoreRefusedAfterARefreshSkipsNoRow() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -457,8 +485,6 @@ import Observation
         XCTAssertEqual(archive.sessions.compactMap(\.sessionId), archived)
     }
 
-    /// The app leaving while the Archived screen connects ends that load, and the client it
-    /// was connecting leaves too, so the screen reads afresh on return.
     func testAConnectTheScreenClosedDuringLeavesNoClient() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -478,9 +504,6 @@ import Observation
         XCTAssertFalse(archive.isConnected)
     }
 
-    // MARK: Export
-
-    /// Export as JSON writes the host's export to a file named after the row's title.
     func testExportWritesTheHostsJSONNamedAfterTheTitle() async throws {
         let host = BotSocketHost()
         let connection = host.connection(record)
@@ -501,9 +524,6 @@ import Observation
         XCTAssertEqual(request.url?.query, "profile=default")
     }
 
-    // MARK: Fixtures
-
-    /// The recorded canonical edits (`scripts/capture-hermes-fixtures --local --gateway`).
     private func canonicalMutations() throws -> BotJSON {
         let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/HermesAgent/canonical-mutations.json")
         guard let data = try? Data(contentsOf: file) else { throw XCTSkip("The source tree is not present (physical device or remote runner).") }
@@ -517,8 +537,6 @@ import Observation
         ))
     }
 
-    /// Answers the list's page with `rows` (none once `method` was sent, when named), and any
-    /// other request with `answer`, else the host's ordinary reply.
     private func serveList(_ rows: [HermesSessionRow], until method: String? = nil, on host: BotSocketHost,
                            _ answer: @escaping (URLRequest) -> HermesHostFixture.Reply? = { _ in nil }) {
         let page = BotJSON.object(["sessions": .array(rows.map(Self.json))])
@@ -530,7 +548,6 @@ import Observation
         }
     }
 
-    /// A chat this phone opened on `tip` and left: its runtime stays on the host.
     private func attachChat(on connection: HermesConnection) async throws {
         let chat = BotClient(http: connection)
         try await chat.connect()
@@ -538,12 +555,10 @@ import Observation
         chat.close()
     }
 
-    /// The params of every call to one of `methods`, in order.
     private func writes(_ host: BotSocketHost, _ methods: Set<String>) -> [[String: BotJSON]] {
         host.requests.filter { methods.contains($0["method"].text ?? "") }.compactMap { $0["params"].fields }
     }
 
-    /// One `session.active_list` item in the host's shape (`server.py` `_session_live_item`).
     private func live(_ runtime: String, _ key: String, _ status: String) -> BotJSON {
         .object(["id": .string(runtime), "session_key": .string(key), "status": .string(status), "current": .bool(false),
                  "last_active": .number(100), "started_at": .number(90), "message_count": .number(2),

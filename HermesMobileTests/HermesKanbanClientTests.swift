@@ -1,9 +1,6 @@
 import XCTest
 @testable import HermesMobile
 
-/// Kanban on a Hermes host (#1043): the real `HermesKanbanClient` on a scripted host whose
-/// replies are the shapes `scripts/local-hermes` returned at the pin (ca678285, 0.21.5), read
-/// through `KanbanFeatureState` and `KanbanCardDetailState` where the screen is the subject.
 @MainActor final class HermesKanbanClientTests: XCTestCase {
     private let record = BotConnection(id: UUID(), name: "Host", address: URL(string: "https://hermes.example")!,
                                        username: "user", password: "secret")
@@ -14,10 +11,6 @@ import XCTest
         clearSavedKanbanBoards()
     }
 
-    override func tearDown() {
-        HermesHostFixture.reset()
-        super.tearDown()
-    }
 
     func testHandshakeShowsTheHostsEightColumnsWritableAndStreamsFromTheBoardsCursor() async {
         let stream = RecordingKanbanStream()
@@ -51,7 +44,6 @@ import XCTest
         XCTAssertFalse(state.offersOnlyMine)
         XCTAssertEqual(stream.starts, ["default@14"], "live updates start at the Board's `latest_event_id`")
 
-        // The foreground asks whether the Board moved, keeps it unmoved, and reopens the socket.
         let detailRevision = state.detailRefreshRevision
         await state.setScenePhase(.background)
         await state.setScenePhase(.active)
@@ -62,8 +54,6 @@ import XCTest
         state.setVisible(false)
     }
 
-    /// The host's `/board` takes no `since`, so its `latest_event_id` answers one: unchanged
-    /// only while it still equals `since`. A recreated database's lower id is a change.
     func testASinceReadIsUnchangedOnlyWhileTheBoardsLatestEventIsTheSame() async throws {
         let client = HermesKanbanClient(http: host())
 
@@ -81,8 +71,6 @@ import XCTest
                        "the host never sees `since`")
     }
 
-    /// A Card's workspace path, claim and worker PID, a run's worker PID, a Board's database
-    /// path and workdir, an attachment's stored path and a log's path never reach a model.
     func testHostPathsAndProcessDataAreDroppedBeforeDecoding() async throws {
         let client = HermesKanbanClient(http: host())
 
@@ -146,7 +134,6 @@ import XCTest
         XCTAssertEqual(detail.loadState, .missingCard)
     }
 
-    /// Absent means 404 on `/config`: a plugin the host never mounted, or one disabled at runtime.
     func testAHostWithoutTheKanbanPluginShowsKanbanUnavailable() async {
         for body in ["No such API endpoint: /api/plugins/kanban/config", "Plugin not found"] {
             HermesHostFixture.reset()
@@ -186,7 +173,6 @@ import XCTest
     func testALostConnectionKeepsTheBoardAndShowsOffline() async {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host()))
         await state.load()
-        // Every later request fails in transit.
         _ = HermesHostFixture.configuration { _ in .fail(URLError(.networkConnectionLost)) }
 
         await state.refresh()
@@ -196,8 +182,6 @@ import XCTest
         XCTAssertFalse(state.canUseServerAuthoritativeActions)
     }
 
-    /// The host's `/board` filters by tenant and archive only, so the Assigned Profile filter
-    /// runs on the client.
     func testFiltersTheHostCannotApplyRunOnTheClient() async {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host()))
         await state.load()
@@ -209,8 +193,6 @@ import XCTest
         XCTAssertEqual(state.availableStatuses.last, "archived")
     }
 
-    /// Only Mine is the Profile the Sessions side lists, filtered here: the host's `/board`
-    /// takes no assignee and knows no "mine".
     func testOnlyMineShowsTheListedProfilesCards() async {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host(), mine: "reviewer"))
         await state.load()
@@ -222,10 +204,6 @@ import XCTest
         XCTAssertFalse(kanbanRequests().contains { $0.contains("only_mine") })
     }
 
-    // MARK: - Writes (#1044)
-
-    /// Create is `POST /tasks?board=`: Triage is `triage: true` and never a `status`, and no
-    /// Assigned Profile is an explicit null, because the host refuses `""` with a 400.
     func testCreateSendsTriageAndANullAssigneeAndNeverAStatus() async throws {
         let client = HermesKanbanClient(http: host([
             "POST /api/plugins/kanban/tasks": .json(200, Self.json(Self.createdTriage))
@@ -246,8 +224,6 @@ import XCTest
         ]))
     }
 
-    /// A repeat block lands the Card in Triage with a 200 (the host's block-loop breaker): the
-    /// block succeeded, and the Card shows where the host put it.
     func testABlockTheHostLandsInTriageShowsTheCardInTriage() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "/api/plugins/kanban/board": .json(200, Self.json(Self.boardWithReadyCard)),
@@ -266,7 +242,6 @@ import XCTest
         XCTAssertEqual(body(of: "PATCH /api/plugins/kanban/tasks/t_2ad0ddc5"), .object(["status": .string("blocked")]))
     }
 
-    /// The board reloads after a Hermes Card write, because the host reports no `changed`.
     func testABlockReloadsTheBoardOnce() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "/api/plugins/kanban/board": .json(200, Self.json(Self.boardWithReadyCard)),
@@ -283,10 +258,6 @@ import XCTest
         XCTAssertEqual(HermesHostFixture.count("/api/plugins/kanban/board"), 2, "the load, then one reload after the write")
     }
 
-    /// No To Do anywhere on Hermes: a Card moves to Triage or Ready, and only a Bulk Action
-    /// moves Cards into Scheduled or Review, though a Card in either moves out to them. Block is
-    /// offered only on Ready and Running Cards, the only ones the host blocks, and Complete on
-    /// the Ready, Running, Blocked and Review Cards it completes, with a result outside Review.
     func testHermesOffersTriageAndReadyButNeverToDoScheduledOrReview() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "/api/plugins/kanban/board": .json(200, Self.json(Self.boardWithReadyCard)),
@@ -313,8 +284,6 @@ import XCTest
         XCTAssertEqual(state.mutationState(for: "t_2ad0ddc5")?.phase, .succeeded)
     }
 
-    /// Unblock succeeds wherever the host lands the Card but Blocked: To Do while a prerequisite
-    /// is open, Review when the Card was blocked out of a review.
     func testUnblockSucceedsWhereverTheHostLandsTheCardButBlocked() async throws {
         for (landed, phase) in [("todo", KanbanCardMutationPhase.succeeded), ("review", .succeeded), ("blocked", .failed)] {
             HermesHostFixture.reset()
@@ -337,7 +306,6 @@ import XCTest
         }
     }
 
-    /// A refused move shows the host's own words, and the Card stays where the host has it.
     func testARefusedMoveShowsTheHostsMessageAndPutsTheCardBack() async throws {
         let detail = "Cannot move to 'ready': blocked by parent(s) not done — 'Shape the next slice' (t_017edf3a, status=triage)"
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
@@ -356,8 +324,6 @@ import XCTest
         XCTAssertEqual(HermesHostFixture.count("/api/plugins/kanban/board"), 2, "the Board is read again after the write")
     }
 
-    /// The host echoes no ids for a prerequisite, so the reply is filled from the request; a
-    /// `gated` link sends the Ready dependent back to To Do, which the Board reload shows.
     func testAPrerequisiteTheHostGatesMovesTheDependentToToDo() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "/api/plugins/kanban/board": .json(200, Self.json(Self.boardWithReadyCard)),
@@ -381,8 +347,6 @@ import XCTest
                        .object(["parent_id": .string("t_017edf3a"), "child_id": .string("t_2ad0ddc5")]))
     }
 
-    /// Removing a prerequisite is a DELETE with query ids, 200 `{ok: false}` when the link was
-    /// already gone; either way the reply is filled from the request and passes validation.
     func testRemovingAPrerequisiteIsADeleteFilledFromTheRequest() async throws {
         let client = HermesKanbanClient(http: host([
             "DELETE /api/plugins/kanban/links": .json(200, .object(["ok": .bool(false)]))
@@ -397,7 +361,6 @@ import XCTest
         XCTAssertEqual(writes(), ["DELETE /api/plugins/kanban/links?board=default&parent_id=t_017edf3a&child_id=t_9b1c2d3e"])
     }
 
-    /// The host's comment reply is `{ok: true}` without the comment, so the Card is read again.
     func testACommentAppearsAfterPosting() async throws {
         let detail = KanbanCardDetailState(cardID: "t_9b1c2d3e", board: "default", client: HermesKanbanClient(http: host([
             "POST /api/plugins/kanban/tasks/t_9b1c2d3e/comments": .json(200, .object(["ok": .bool(true)]))
@@ -419,8 +382,6 @@ import XCTest
         XCTAssertEqual(body(of: "POST /api/plugins/kanban/tasks/t_9b1c2d3e/comments"), .object(["body": .string("Looks good.")]))
     }
 
-    /// A Bulk Action is 200 with per-Card failures; each Card is read again, and the ones the host
-    /// left where they were show as failed and stay selected.
     func testBulkShowsTheCardsTheHostRefused() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "POST /api/plugins/kanban/tasks/bulk": .json(200, Self.json(#"""
@@ -445,8 +406,6 @@ import XCTest
         XCTAssertEqual(state.selectedCardIDs, ["t_ed0bb193"])
     }
 
-    /// Bulk Review lands a Ready Card in Review; the host refuses a Triage one, which shows as
-    /// failed and stays where it was.
     func testBulkReviewShowsTheCardsTheHostCannotReview() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "/api/plugins/kanban/board": .json(200, Self.json(Self.boardWithReadyCard)),
@@ -471,8 +430,6 @@ import XCTest
         XCTAssertEqual(state.bulkActionSummary?.failedCardIDs, ["t_017edf3a"])
     }
 
-    /// Bulk Done on a Card outside Review carries the note the host needs to complete it, and
-    /// Retry sends the same note again.
     func testBulkDoneOutsideReviewSendsTheNoteAndRetryKeepsIt() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "/api/plugins/kanban/board": .json(200, Self.json(Self.boardWithReadyCard)),
@@ -494,7 +451,6 @@ import XCTest
                                                        "result": .string("Shipped")]), count: 2))
     }
 
-    /// A selected Review Card that another client reopens asks for the note once the Board shows it.
     func testBulkDoneNeedsTheNoteWhenASelectedCardLeavesReview() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "/api/plugins/kanban/board": .json(200, Self.json(Self.boardWith("t_2ad0ddc5", in: "review")))
@@ -510,7 +466,6 @@ import XCTest
         XCTAssertEqual(state.bulkStatusAction("done", result: "Shipped"), .complete(result: "Shipped"))
     }
 
-    /// Preview Dispatch shows today's summary from the host's `DispatchResult`.
     func testPreviewDispatchShowsTodaysSummary() async {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "POST /api/plugins/kanban/dispatch": .json(200, Self.json(#"""
@@ -529,8 +484,6 @@ import XCTest
         XCTAssertEqual(state.dispatchState?.result?.spawned, 0)
     }
 
-    /// Board writes never send a directory or project, archive without deleting, and leave the
-    /// Board this server browses where it was.
     func testBoardWritesReachTheHostAndKeepThePerServerBoard() async throws {
         let withScratch = Self.boards.replacingOccurrences(of: #"],"current":"default"}"#, with: #",{"slug":"scratch","name":"Scratch","#
             + #""description":"","icon":"","color":"","archived":false,"is_current":false,"counts":{},"total":0}],"current":"default"}"#)
@@ -571,7 +524,6 @@ import XCTest
         XCTAssertEqual(KanbanBoardPreference.savedSlug(for: server, in: .standard), "default")
     }
 
-    /// A 400 or 409 carries the host's `detail`; any other refusal is the status alone.
     func testARefusalCarriesTheHostsDetail() async {
         let rows: [(reply: HermesHostFixture.Reply, error: Error)] = [
             (.json(409, .object(["detail": .string("status transition to 'blocked' not valid from current state")])),
@@ -595,10 +547,6 @@ import XCTest
         }
     }
 
-    /// The editor on Hermes: Triage and Ready, the Board's workspace kind sent as shown, because
-    /// an omitted one is Scratch on a Board with a directory but no project, and a Card asked
-    /// into Ready that the host parks in To Do behind its open prerequisite. The host's warning
-    /// becomes the Board's notice.
     func testCreateOffersTriageAndReadyAndSendsTheBoardsWorkspaceKind() async throws {
         let warning = "No gateway is running — the task will sit in 'ready' until you start it."
         let projectBoards = Self.boards.replacingOccurrences(of: #""default_workspace_kind":"scratch""#,
@@ -631,8 +579,6 @@ import XCTest
         XCTAssertEqual(state.cardNotice, warning)
     }
 
-    /// A Scratch nobody picked is left out, so a project Board gives the Card its project; a
-    /// picked Scratch is sent, which opts out of the project.
     func testCreateLeavesOutOnlyAScratchNobodyPicked() async throws {
         let state = KanbanFeatureState(server: server, client: HermesKanbanClient(http: host([
             "POST /api/plugins/kanban/tasks": .json(200, Self.json(Self.card("t_5ff898b1", status: "triage")))
@@ -653,8 +599,6 @@ import XCTest
         XCTAssertEqual(sent, [nil, .string("scratch")])
     }
 
-    /// The editor on Hermes: tenant read-only, never sent; the assignee sent only when it
-    /// changed, `""` to unassign; a refusal shows the host's words.
     func testEditKeepsTenantReadOnlyAndUnassignsWithAnEmptyString() async throws {
         let refusal = "cannot reassign t_9b1c2d3e: currently running (claimed). Wait for completion or reclaim the stale lock first."
         let client = HermesKanbanClient(http: host([
@@ -686,8 +630,6 @@ import XCTest
         ]), "an unchanged assignee is not sent: the host refuses any reassign of a running Card")
     }
 
-    /// Review and Overwrite sends the draft's assignee when it differs from the newer server
-    /// Card it overwrites, even if the draft kept the one the editor opened.
     func testOverwritingARemotelyReassignedCardSendsTheDraftsAssignee() async throws {
         let opened = Self.json(Self.detail("t_2ad0ddc5", status: "ready"))
         let reassigned = Self.json(Self.detail("t_2ad0ddc5", status: "ready")
@@ -712,8 +654,6 @@ import XCTest
         XCTAssertEqual(body(of: "PATCH /api/plugins/kanban/tasks/t_2ad0ddc5")?["assignee"], .string(""))
     }
 
-    /// Undo Archive on Hermes restores to Ready unless the Card came from Triage, and a Done
-    /// Card offers none: the host refuses Done from Archived, and Ready would dispatch it again.
     func testArchiveUndoRestoresToAnOrdinaryDestination() async throws {
         for (id, from, restore) in [("t_04fba87e", "review", "ready" as String?), ("t_017edf3a", "triage", "triage"),
                                     ("t_ed0bb193", "done", nil)] {
@@ -730,10 +670,6 @@ import XCTest
         }
     }
 
-    // MARK: - Host
-
-    /// The scripted host: the pinned replies with `overrides`, by `METHOD /path` or `/path`.
-    /// Once a request matches a key of `after`, its replies take over, as the host's state moves.
     private func host(_ overrides: [String: HermesHostFixture.Reply] = [:],
                       after writes: [String: [String: HermesHostFixture.Reply]] = [:]) -> HermesConnection {
         let pinned: [String: String] = [
@@ -756,7 +692,6 @@ import XCTest
         })
     }
 
-    /// The Kanban writes the host saw, as method, path and query.
     private func writes() -> [String] {
         HermesHostFixture.requests.filter { $0.httpMethod != "GET" }.compactMap { request in
             request.url.flatMap { url in
@@ -766,14 +701,12 @@ import XCTest
         }
     }
 
-    /// The JSON body of the last request sent as `call`, such as `PATCH /api/plugins/kanban/tasks/t_1`.
     private func body(of call: String) -> BotJSON? {
         HermesHostFixture.requests.last { "\($0.httpMethod ?? "GET") \($0.url?.path ?? "")" == call }
             .flatMap(apiTestBodyData(from:))
             .flatMap { try? JSONDecoder().decode(BotJSON.self, from: $0) }
     }
 
-    /// The Kanban requests the host saw, as path and query.
     private func kanbanRequests() -> [String] {
         HermesHostFixture.requests.compactMap(\.url).filter { $0.path.hasPrefix("/api/plugins/kanban") }.map { url in
             url.query.map { "\(url.path)?\($0)" } ?? url.path
@@ -783,8 +716,6 @@ import XCTest
     private static func json(_ text: String) -> BotJSON {
         try! JSONDecoder().decode(BotJSON.self, from: Data(text.utf8))
     }
-
-    // MARK: - Pinned shapes (scripts/local-hermes, ca678285)
 
     private static let config = #"""
     {"default_tenant":"","lane_by_profile":true,"include_archived_by_default":false,"render_markdown":true}
@@ -854,7 +785,6 @@ import XCTest
       "started_at":1791250608,"ended_at":null,"outcome":null,"summary":null,"metadata":null,"error":null}]}
     """#
 
-    /// One Card as the host's `{task}` write reply carries it.
     private static func card(_ id: String, status: String, assignee: String? = nil, tenant: String? = nil) -> String {
         let assignee = assignee.map { "\"\($0)\"" } ?? "null", tenant = tenant.map { "\"\($0)\"" } ?? "null"
         return #"{"task":{"id":""# + id + #"","title":"Ready card","body":null,"assignee":"# + assignee + #","status":""#
@@ -862,7 +792,6 @@ import XCTest
             + tenant + #","claim_lock":null,"worker_pid":null,"age":{"created_age_seconds":0,"started_age_seconds":null}}}"#
     }
 
-    /// One Card's detail as the host's `/tasks/{id}` carries it, with its prerequisites.
     private static func detail(_ id: String, status: String, parents: [String] = []) -> String {
         let parents = parents.map { "\"\($0)\"" }.joined(separator: ",")
         return #"{"task":{"id":""# + id + #"","title":"Ready card","body":null,"assignee":null,"status":""# + status
@@ -878,10 +807,8 @@ import XCTest
     "age":{"created_age_seconds":0,"started_age_seconds":null,"time_to_complete_seconds":null},"latest_summary":null}}
     """#
 
-    /// The pinned Board with one more Card, `t_2ad0ddc5`, in Ready.
     private static let boardWithReadyCard = boardWith("t_2ad0ddc5", in: "ready")
 
-    /// The pinned Board with one more Card, `id`, first in the Column `status`.
     private static func boardWith(_ id: String, in status: String, title: String = "Ready card") -> String {
         let card = #"{"id":""# + id + #"","title":""# + title + #"","assignee":null,"status":""# + status
             + #"","priority":0,"created_at":1791259050,"age":{"created_age_seconds":0,"started_age_seconds":null},"#
@@ -897,7 +824,6 @@ import XCTest
     """#
 }
 
-/// Records live-update starts as `board@since`.
 private final class RecordingKanbanStream: KanbanEventStreamingClient {
     private(set) var starts: [String] = []
 

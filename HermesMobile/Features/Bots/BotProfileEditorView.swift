@@ -10,7 +10,6 @@ import SwiftUI
     @State private var showsExpressions = false
     @State private var showsDescribe = false
     @State private var imageError: String?
-    /// What the face should do about the last edit; see `BotCreateView`.
     @State private var cue: BotFaceCue?
     @Environment(\.scenePhase) private var scenePhase
 
@@ -54,8 +53,6 @@ import SwiftUI
         .task { if editor.state == .idle { await editor.load() } }
         .onDisappear { editor.close() }
         .onChange(of: scenePhase) {
-            // Control Center and banners (`.inactive`) keep the connection (#902); only an
-            // editor without one reloads, and never over unsaved edits.
             if scenePhase == .background {
                 editor.suspend()
             } else if scenePhase == .active, !editor.holdsConnection,
@@ -185,7 +182,6 @@ import SwiftUI
         .padding(.top, 26).padding(.bottom, 12)
     }
 
-    /// The Contacts-style badge on the hero avatar: the one place a photo is chosen or removed.
     private var photoMenu: some View {
         Menu {
             Button { showsPhotoPicker = true } label: { Label("Choose Photo", systemImage: "photo.on.rectangle") }
@@ -266,23 +262,26 @@ import SwiftUI
     }
 
     private func capabilityPicker(_ field: BotProfileEditor.Field) -> some View {
-        NavigationStack {
-            AppList {
-                ForEach(capabilities(field)) { item in
-                    Toggle(isOn: Binding(get: { capability(field, id: item.id)?.enabled == true },
-                                         set: { editor.setEnabled($0, field: field, id: item.id) })) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.name)
-                            if let detail = item.detail, !detail.isEmpty { Text(detail).font(AppFont.caption()).foregroundStyle(.appSecondary) }
-                        }
-                    }
-                }
+        BotCapabilityPicker(title: field.title, items: capabilities(field),
+                            setEnabled: { editor.setEnabled($0, field: field, id: $1) },
+                            done: { capabilitySheet = nil }) {
+            switch field {
+            case .skills:
+                NavigationLink {
+                    SkillsHubView(client: HermesSkillsHubClient(
+                        http: HermesConnections.shared.connection(for: editor.connection, server: editor.server),
+                        profile: editor.profile.id)) {}
+                        .onDisappear { Task { await editor.refreshCapabilities() } }
+                } label: { Label("Discover Skills", systemImage: "plus") }
+            case .mcpServers:
+                NavigationLink {
+                    MCPServersView(connection: editor.connection, server: editor.server, profile: editor.profile.id)
+                        .onDisappear { Task { await editor.refreshCapabilities() } }
+                } label: { Label("Add Server", systemImage: "plus") }
+            default:
+                EmptyView()
             }
-            .themedPageBackground()
-            .navigationTitle(field.title).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { capabilitySheet = nil } } }
         }
-        .adaptiveFormPresentation()
     }
 
     private var modelPicker: some View {
@@ -344,9 +343,6 @@ import SwiftUI
         }
     }
 
-    private func capability(_ field: BotProfileEditor.Field, id: String) -> BotProfileCapability? {
-        capabilities(field).first { $0.id == id }
-    }
 
     private func resultIcon(_ outcome: BotProfileEditor.Outcome) -> String {
         switch outcome { case .saved: return "checkmark.circle.fill"; case .conflict: return "arrow.clockwise.circle"; case .confirmationRequired: return "questionmark.circle"; case .failed: return "exclamationmark.circle" }
@@ -372,5 +368,45 @@ import SwiftUI
                 try editor.selectAvatar(data)
             } catch { imageError = error.localizedDescription }
         }
+    }
+}
+
+struct BotCapabilityPicker<Add: View>: View {
+    let title: String
+    let items: [BotProfileCapability]
+    let setEnabled: (Bool, String) -> Void
+    let done: () -> Void
+    let add: Add
+
+    init(title: String, items: [BotProfileCapability], setEnabled: @escaping (Bool, String) -> Void,
+         done: @escaping () -> Void, @ViewBuilder add: () -> Add) {
+        self.title = title; self.items = items; self.setEnabled = setEnabled; self.done = done; self.add = add()
+    }
+
+    var body: some View {
+        NavigationStack {
+            AppList {
+                add
+                ForEach(items) { item in
+                    Toggle(isOn: Binding(get: { item.enabled }, set: { setEnabled($0, item.id) })) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.name)
+                            if let detail = item.detail, !detail.isEmpty { Text(detail).font(AppFont.caption()).foregroundStyle(.appSecondary) }
+                        }
+                    }
+                }
+            }
+            .themedPageBackground()
+            .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: done) } }
+        }
+        .adaptiveFormPresentation()
+    }
+}
+
+extension BotCapabilityPicker where Add == EmptyView {
+    init(title: String, items: [BotProfileCapability], setEnabled: @escaping (Bool, String) -> Void,
+         done: @escaping () -> Void) {
+        self.init(title: title, items: items, setEnabled: setEnabled, done: done) { EmptyView() }
     }
 }

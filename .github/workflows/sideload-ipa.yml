@@ -1,0 +1,170 @@
+# Builds an IPA for sideloading with a free Apple ID (Sideloadly, AltStore).
+#
+# The app is compiled without a team, then ad-hoc signed with its
+# entitlements so the sideloading tool knows which Keychain and App Group
+# entitlements to re-sign it with under the installer's own team. Nothing here
+# uses repository secrets or an Apple account.
+#
+# Free Apple IDs cannot sign push notifications or time-sensitive
+# notifications, so those entitlements are dropped. The share extension and
+# widgets read the App Group from Info.plist; if the sideloading tool renames
+# the group, they lose the shared container and the main app keeps working.
+#
+# Bundle IDs use a prefix of our own (io.github.<owner>.hermex): the default
+# com.uzairansar.hermesmobile IDs belong to another team and cannot be
+# registered by a free Apple ID.
+#
+# Each build is published as a release tagged sideload-<run number>, marked as
+# the latest, so /releases/latest always has the newest IPA. PRs from other
+# repositories only get the workflow artifact: their token cannot write here.
+
+name: Sideload IPA
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# contents: write lets the job publish the IPA as a GitHub Release.
+permissions:
+  contents: write
+
+concurrency:
+  group: sideload-ipa-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    name: Build sideload IPA
+    runs-on: xcode-27
+    timeout-minutes: 60
+
+    env:
+      PROJECT_PATH: HermesMobile.xcodeproj
+      SCHEME: HermesMobile
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      DERIVED_DATA_PATH: DerivedData
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Choose bundle ID
+        run: |
+          set -euo pipefail
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-')
+          bundle_id="io.github.${owner}.hermex"
+          # Config/Local.xcconfig is gitignored and included last by Shared.xcconfig.
+          printf 'APP_BUNDLE_IDENTIFIER = %s\nAPP_GROUP_IDENTIFIER = group.%s\n' "${bundle_id}" "${bundle_id}" > Config/Local.xcconfig
+          echo "BUNDLE_ID=${bundle_id}" >> "${GITHUB_ENV}"
+          echo "ARCHIVE_PATH=${RUNNER_TEMP}/Hermex.xcarchive" >> "${GITHUB_ENV}"
+          echo "Bundle ID: ${bundle_id}"
+
+      - name: Archive without signing
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project "${PROJECT_PATH}" \
+            -scheme "${SCHEME}" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "${ARCHIVE_PATH}" \
+            -derivedDataPath "${DERIVED_DATA_PATH}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Ad-hoc sign with entitlements
+        run: |
+          set -euo pipefail
+          app="${ARCHIVE_PATH}/Products/Applications/HermesMobile.app"
+          test -d "${app}"
+          team=$(xcodebuild -project "${PROJECT_PATH}" -scheme "${SCHEME}" -configuration Release -showBuildSettings 2>/dev/null \
+            | awk -F' = ' '/^ *DEVELOPMENT_TEAM = /{print $2; exit}')
+          entitlements_dir="${RUNNER_TEMP}/entitlements"
+          mkdir -p "${entitlements_dir}"
+
+          # Resolve the source entitlements the way Xcode would, minus what a
+          # free Apple ID cannot sign.
+          resolve() {
+            local source="$1" out="$2"
+            sed -e "s|\$(APP_GROUP_IDENTIFIER)|group.${BUNDLE_ID}|g" \
+                -e "s|\$(KEYCHAIN_DEFAULT_ACCESS_GROUP)|${team}.${BUNDLE_ID}|g" \
+                -e "s|\$(KEYCHAIN_ACCESS_GROUP)|${team}.${BUNDLE_ID}.push|g" \
+                "${source}" > "${out}"
+            /usr/libexec/PlistBuddy -c "Delete :aps-environment" "${out}" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.usernotifications.time-sensitive" "${out}" 2>/dev/null || true
+            plutil -lint "${out}"
+            if grep -q '\$(' "${out}"; then
+              echo "Unresolved build setting in ${out}" >&2
+              exit 1
+            fi
+          }
+
+          # Inner code first: frameworks, then extensions, then the app.
+          find "${app}" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0 |
+            while IFS= read -r -d '' item; do
+              codesign --force --sign - "${item}"
+            done
+
+          for appex in "${app}"/PlugIns/*.appex; do
+            [[ -d "${appex}" ]] || continue
+            id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${appex}/Info.plist")
+            case "${id}" in
+              *.shareextension) source=HermesShareExtension/Resources/HermesShareExtension.entitlements ;;
+              *.liveactivitywidget) source=HermesLiveActivityWidget/Resources/HermesLiveActivityWidget.entitlements ;;
+              *.notifications) source=HermesNotificationService/Resources/HermesNotificationService.entitlements ;;
+              *) echo "Unknown extension ${id}" >&2; exit 1 ;;
+            esac
+            resolve "${source}" "${entitlements_dir}/${id}.plist"
+            codesign --force --sign - --entitlements "${entitlements_dir}/${id}.plist" "${appex}"
+          done
+
+          resolve HermesMobile/Resources/HermesMobile.entitlements "${entitlements_dir}/app.plist"
+          codesign --force --sign - --entitlements "${entitlements_dir}/app.plist" "${app}"
+          codesign --verify --deep --strict "${app}"
+          echo "App entitlements:"
+          codesign -d --entitlements - --xml "${app}" | plutil -p -
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          staging="${RUNNER_TEMP}/ipa"
+          mkdir -p "${staging}/Payload"
+          cp -R "${ARCHIVE_PATH}/Products/Applications/HermesMobile.app" "${staging}/Payload/"
+          (cd "${staging}" && zip -qry Hermex-sideload.ipa Payload)
+          mv "${staging}/Hermex-sideload.ipa" .
+          ls -lh Hermex-sideload.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: Hermex-sideload-ipa
+          path: Hermex-sideload.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SOURCE_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="sideload-${GITHUB_RUN_NUMBER}"
+          short="${TARGET_SHA:0:7}"
+          {
+            echo "Sideload build of \`${SOURCE_REF}\` at ${short}."
+            echo
+            echo "Install with Sideloadly or AltStore using a free Apple ID. A free Apple ID's install expires after 7 days; push notifications are not available."
+            echo
+            echo "Bundle ID: \`${BUNDLE_ID}\`"
+          } > "${RUNNER_TEMP}/notes.md"
+          gh release create "${tag}" Hermex-sideload.ipa \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${TARGET_SHA}" \
+            --title "Hermex sideload ${GITHUB_RUN_NUMBER} (${short})" \
+            --notes-file "${RUNNER_TEMP}/notes.md" \
+            --latest

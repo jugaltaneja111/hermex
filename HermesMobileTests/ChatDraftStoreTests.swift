@@ -411,8 +411,6 @@ final class ChatDraftStoreTests: XCTestCase {
 
         store.setDraft("Submitted text", for: key)
         store.setAttachments([attachment], for: key)
-        // The composer binding writes every edit through, so by the time the
-        // send resolves the store already holds the newer text.
         store.setDraft("New text", for: key)
 
         let result = store.resolveSubmission(
@@ -586,10 +584,6 @@ final class ChatDraftStoreTests: XCTestCase {
         XCTAssertEqual(deletedNames, ["first.txt"])
     }
 
-    // MARK: - Send reconciliation
-
-    /// The bug this guards: a send used to discard every record the draft held,
-    /// deleting durable copies for attachments it never carried.
     func testSendConsumesOnlyTheAttachmentsStagedInTheComposer() {
         let staged = makeAttachmentRecord(name: "carried.txt", file: "a-carried.txt")
         let awaitingRetry = makeAttachmentRecord(name: "retry.txt", file: "b-retry.txt")
@@ -604,10 +598,6 @@ final class ChatDraftStoreTests: XCTestCase {
         XCTAssertEqual(outcome.retained.map(\.id), [awaitingRetry.id, notYetRestored.id])
     }
 
-    // MARK: - Parking queued messages (#857)
-
-    /// Files without a durable copy go back to the composer but aren't
-    /// recorded: nothing could restore them on reopen.
     func testQueuedMessagesMergeIntoEmptyDraft() async {
         let store = ChatDraftStore(
             persistence: RecordingChatDraftPersistence(),
@@ -630,9 +620,6 @@ final class ChatDraftStoreTests: XCTestCase {
         assertDraftContentEqual(stored, expected)
     }
 
-    /// Queued texts were typed first, so the draft's own text goes last. A
-    /// queued text already carries its quotes as Markdown; the draft's own
-    /// quotes stay quotes.
     func testQueuedMessagesMergeBeforeExistingDraftText() async throws {
         let store = ChatDraftStore(
             persistence: RecordingChatDraftPersistence(),
@@ -663,9 +650,6 @@ final class ChatDraftStoreTests: XCTestCase {
         assertDraftContentEqual(untouched, ChatDraft(text: "other server"))
     }
 
-    /// On iPad the chat stays on screen while its session is deleted from the
-    /// sidebar, so it parks its queue after the delete discarded its draft.
-    /// That must not bring back a draft nobody can open.
     func testParkingAfterSessionDeleteLeavesNoDraft() async {
         let store = ChatDraftStore(
             persistence: RecordingChatDraftPersistence(),
@@ -707,8 +691,6 @@ final class ChatDraftStoreTests: XCTestCase {
         )
     }
 
-    /// An added text's review notice comes back after a relaunch naming where the text came from
-    /// (#1402, #1476), until the user clears it; a draft saved before #1476 reads as a Shortcut's.
     func testAddedTextNoticeSurvivesARelaunchWithItsOriginUntilCleared() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -735,8 +717,32 @@ final class ChatDraftStoreTests: XCTestCase {
         XCTAssertEqual(cleared?.text, "From Troubleshooting")
     }
 
-    /// A Hermes Send waiting for the reconnect (#1407) is on disk apart from the typed text, so a
-    /// relaunch finds it, and returning it puts it ahead of what was typed since, once.
+    func testNewSessionDraftsStayWithTheirWorkingFolder() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let folder = directory.appendingPathComponent("ChatDrafts")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let connectionID = UUID()
+        let json = #"{"version":4,"drafts":[{"serverID":"https://hermes.example","context":"hermesSession","connectionID":"\#(connectionID.uuidString)","profile":"default","text":"Saved before"}]}"#
+        try Data(json.utf8).write(to: folder.appendingPathComponent("drafts.json"))
+        let server = URL(string: "https://hermes.example")!
+        func key(_ cwd: String?) -> ChatDraftKey {
+            ConversationTarget.new(profile: "default", cwd: cwd).draftKey(server: server, connectionID: connectionID)
+        }
+
+        let store = ChatDraftStore(persistence: ChatDraftFilePersistence(directoryURL: directory), debounceDuration: .zero)
+        _ = await store.draft(for: key(nil))
+        store.setDraft("For A", for: key("/work/a"))
+        store.setDraft("For B", for: key("/work/b"))
+        try await store.flush()
+
+        let relaunched = ChatDraftStore(persistence: ChatDraftFilePersistence(directoryURL: directory), debounceDuration: .zero)
+        for (cwd, text) in [(nil, "Saved before"), ("/work/a", "For A"), ("/work/b", "For B")] {
+            let restored = await relaunched.draft(for: key(cwd))
+            XCTAssertEqual(restored?.text, text, cwd ?? "default folder")
+        }
+    }
+
     func testAWaitingSendSurvivesARelaunchAndReturnsAheadOfNewerText() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -837,7 +843,9 @@ final class ChatDraftStoreTests: XCTestCase {
             ],
             attachments: [
                 Self.sampleAttachment(),
-                Self.sampleAttachment(file: nil)
+                Self.sampleAttachment(file: nil),
+                ChatDraftAttachment(id: UUID(), name: "pasted-text.txt", mime: "text/plain", size: 5,
+                                    isImage: false, file: "a-pasted-text.txt", isClipboardPaste: true)
             ],
             settings: ChatDraftSettings(
                 modelID: "model-x",
@@ -946,8 +954,6 @@ final class ChatDraftStoreTests: XCTestCase {
             context: .session("chat-1")
         )
 
-        // A traversal attempt degrades the record to metadata-only; the
-        // attachment itself (and its name) still round-trips.
         let attachment = try XCTUnwrap(drafts[key]?.attachments.first)
         XCTAssertEqual(attachment.name, "photo.jpg")
         XCTAssertNil(attachment.file)
@@ -1309,6 +1315,26 @@ final class ChatDraftStoreTests: XCTestCase {
         XCTAssertEqual(actual?.attachments, expected?.attachments, file: file, line: line)
         XCTAssertEqual(actual?.settings, expected?.settings, file: file, line: line)
         XCTAssertEqual(actual?.botSubmissionUncertain, expected?.botSubmissionUncertain, file: file, line: line)
+    }
+
+    func testHermesSessionDraftKeysListOnlyThisConnectionsNonEmptyStoredSessionDrafts() async {
+        let server = URL(string: "https://hermes.example")!
+        let other = URL(string: "https://other.example")!
+        let connection = UUID(), otherConnection = UUID()
+        let typed = ChatDraft(text: "half-typed")
+        let store = ChatDraftStore(persistence: RecordingChatDraftPersistence(initialDrafts: [
+            .hermesSession(server: server, connectionID: connection, profile: "default", key: "root"): typed,
+            .hermesSession(server: server, connectionID: connection, profile: "research", key: "other"): typed,
+            .hermesSession(server: server, connectionID: connection, profile: "default", key: "emptied"): ChatDraft(),
+            .hermesSession(server: server, connectionID: connection, profile: "default", key: nil, cwd: "/launch"): typed,
+            .hermesSession(server: other, connectionID: connection, profile: "default", key: "elsewhere"): typed,
+            .hermesSession(server: server, connectionID: otherConnection, profile: "default", key: "theirs"): typed,
+            .session(server: server, sessionID: "webui"): typed,
+        ]), debounceDuration: .seconds(10))
+
+        let keys = await store.hermesSessionDraftKeys(server: server, connectionID: connection)
+
+        XCTAssertEqual(keys, [.init(profile: "default", key: "root"), .init(profile: "research", key: "other")])
     }
 
     private func temporaryDirectory() -> URL {

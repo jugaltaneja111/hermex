@@ -3,7 +3,6 @@ import WebKit
 import XCTest
 @testable import HermesMobile
 
-/// Inline HTML reports in Hermes replies (#1623).
 @MainActor
 final class HTMLReportTests: XCTestCase {
     func testAnHTMLFileRendersInPlaceOnlyInASettledHermesReply() {
@@ -13,7 +12,6 @@ final class HTMLReportTests: XCTestCase {
 
         XCTAssertTrue(HTMLReport.rendersInline(report, loader: hermes, isStreaming: false))
         XCTAssertTrue(HTMLReport.rendersInline(remote, loader: hermes, isStreaming: false))
-        // webui publishes no loader, and a streaming reply keeps its card until it settles.
         XCTAssertFalse(HTMLReport.rendersInline(report, loader: nil, isStreaming: false))
         XCTAssertFalse(HTMLReport.rendersInline(report, loader: hermes, isStreaming: true))
         XCTAssertFalse(HTMLReport.rendersInline(
@@ -26,6 +24,16 @@ final class HTMLReportTests: XCTestCase {
         XCTAssertEqual(DrawableFence(language: "mermaid", isStreaming: false), .mermaid)
         XCTAssertNil(DrawableFence(language: "svg", isStreaming: true))
         XCTAssertNil(DrawableFence(language: "python", isStreaming: false))
+        XCTAssertEqual(DrawableFence(language: "html", isStreaming: false), .html)
+        XCTAssertEqual(DrawableFence(language: "htm", isStreaming: false), .html)
+        XCTAssertNil(DrawableFence(language: "html", isStreaming: true))
+        XCTAssertNil(DrawableFence(language: "htm", isStreaming: true))
+    }
+
+    func testAnHTMLFenceOpensItsSourceAsThePageAndAnEmptyOneFails() {
+        let source = "<!doctype html><html><body><h1>Hi</h1></body></html>"
+        XCTAssertEqual(DrawableFence.html.page(for: "\n\(source)\n", width: 390), source)
+        XCTAssertNil(DrawableFence.html.page(for: " \n ", width: 390))
     }
 
     func testAnSVGThatCannotDrawOpensTheFailureState() {
@@ -34,7 +42,6 @@ final class HTMLReportTests: XCTestCase {
         XCTAssertNil(DrawableFence.svg.page(for: "<html><body>not a drawing</body></html>", width: 390))
     }
 
-    /// Runs the bundled engine, so it also proves the app ships it.
     func testADiagramThatCannotParseOpensTheFailureState() throws {
         let page = try XCTUnwrap(DrawableFence.mermaid.page(for: "flowchart LR\n  A[Ask] --> B[Answer]\n", width: 390))
         XCTAssertTrue(page.contains("<svg"))
@@ -143,17 +150,14 @@ final class HTMLReportTests: XCTestCase {
 
         XCTAssertEqual(HTMLReportNavigation.decision(for: blank, isMainFrame: true, isLinkTap: false, hasLoaded: false), .allow)
         XCTAssertEqual(HTMLReportNavigation.decision(for: link, isMainFrame: true, isLinkTap: true, hasLoaded: true), .open(link))
-        // A script can't move the page, to the web or back to a blank page.
         XCTAssertEqual(HTMLReportNavigation.decision(for: link, isMainFrame: true, isLinkTap: false, hasLoaded: true), .cancel)
         XCTAssertEqual(HTMLReportNavigation.decision(for: blank, isMainFrame: true, isLinkTap: false, hasLoaded: true), .cancel)
-        // WebKit hands an in-page anchor over as a new page; the app scrolls to it instead.
         XCTAssertEqual(HTMLReportNavigation.decision(
             for: URL(string: "about:blank%23totals"), isMainFrame: true, isLinkTap: true, hasLoaded: true
         ), .anchor("totals"))
         XCTAssertEqual(HTMLReportNavigation.decision(
             for: URL(string: "data:text/html,hi"), isMainFrame: true, isLinkTap: true, hasLoaded: true
         ), .cancel)
-        // Frames inside the page, such as an embedded chart, load freely.
         XCTAssertEqual(HTMLReportNavigation.decision(for: link, isMainFrame: false, isLinkTap: false, hasLoaded: true), .allow)
     }
 
@@ -163,14 +167,14 @@ final class HTMLReportTests: XCTestCase {
 
         XCTAssertTrue(css.contains("--background:rgb(31 30 28 / 1.00)"), css)
         XCTAssertTrue(css.contains("--primary:rgb(224 162 94 / 1.00)"), css)
+        XCTAssertTrue(css.contains("--primary-foreground:rgb("), css)
+        XCTAssertTrue(css.contains("--muted:rgb("), css)
         XCTAssertTrue(css.contains("color-scheme:dark"), css)
-        // Every rule is zero-specificity, so any rule of the page's own wins.
         let selectors = css.split(separator: "\n").map { $0.prefix(while: { $0 != "{" }) }
         XCTAssertTrue(selectors.allSatisfy { $0.hasPrefix(":where(") }, css)
     }
 }
 
-/// Counts the page loads `HTMLReportWebView.Coordinator` starts, without loading anything.
 private final class LoadCountingWebView: WKWebView {
     private(set) var loads = 0
 

@@ -58,19 +58,21 @@ These stay San Francisco: system menus and alerts, segmented controls, and `Cont
 
 ## HTML reports
 
-A Hermes reply's `.html` file renders in place in the chat and in a full-height sheet (#1623, `HermesMobile/Features/Chat/HTMLReport.swift`). Like a browser, a visible report loads whatever remote images, styles or scripts it names without a tap, so those hosts see the request and the device's IP address; no Hermes cookie, credential or header goes with it. The page gets the active theme, font and text size as zero-specificity defaults (`:where()`), so any style of its own wins. A live page restyles in place when the theme, accent, font, text size or light/dark changes. These CSS variables are set on `:root`:
+A Hermes reply's `.html` file renders in place in the chat and in a full-height sheet (#1623, `HermesMobile/Features/Chat/HTMLReport.swift`). An `.html` or `.htm` file opened in the workspace file viewer (a chat link, Files, search) opens on the same page, with Source in its actions menu (#1712). A settled `html` or `htm` code fence gets a View button that opens its source as the page in the same sheet, with no card around it (#1748). Like a browser, a visible report loads whatever remote images, styles or scripts it names without a tap, so those hosts see the request and the device's IP address; no Hermes cookie, credential or header goes with it. The page gets the active theme, font and text size as zero-specificity defaults (`:where()`), so any style of its own wins. A live page restyles in place when the theme, accent, font, text size or light/dark changes. These CSS variables are set on `:root`:
 
 | Variable | From |
 |---|---|
 | `--background` | canvas |
 | `--foreground` | text |
 | `--card` | surface |
+| `--muted` | fill (tracks, chips, quiet backgrounds) |
 | `--muted-foreground` | secondary text |
 | `--border` | separator |
 | `--primary` | accent |
+| `--primary-foreground` | text on the accent (onAccent) |
 | `--font-sans` | the Font setting; DM Sans falls back to the system sans and Lora to Georgia, because the page's web process can't see bundled fonts |
 | `--font-mono` | the system monospaced font |
 
 A user can paste this to their agent:
 
-> When you make an HTML report for me, send it as a single `.html` file. Style it with the CSS variables `--background`, `--foreground`, `--card`, `--muted-foreground`, `--border`, `--primary`, `--font-sans` and `--font-mono` instead of fixed colors and fonts, so it matches my app's theme in light and dark. Inline images, styles and data; a relative link to another file won't load.
+> When you make an HTML report for me, send it as a single `.html` file. Style it with the CSS variables `--background`, `--foreground`, `--card`, `--muted`, `--muted-foreground`, `--border`, `--primary`, `--primary-foreground`, `--font-sans` and `--font-mono` instead of fixed colors and fonts, so it matches my app's theme in light and dark. Inline images, styles and data; a relative link to another file won't load.

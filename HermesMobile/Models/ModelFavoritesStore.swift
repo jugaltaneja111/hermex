@@ -5,7 +5,6 @@ struct ModelFavoriteKey: Codable, Equatable, Hashable {
     let providerID: String?
 }
 
-// UserDefaults supports concurrent preference access; these stores are immutable wrappers around it.
 struct ModelFavoritesStore: @unchecked Sendable {
     private static let baseKey = "hermes.mobile.favoriteModels"
 
@@ -17,7 +16,6 @@ struct ModelFavoritesStore: @unchecked Sendable {
         self.storageKey = storageKey
     }
 
-    /// One server's favorites. A model's name means nothing on another server.
     init(server: URL, defaults: UserDefaults = .standard) {
         let key = defaults.scopedModelListKey(base: Self.baseKey, server: server)
         self.init(defaults: defaults, storageKey: key)
@@ -104,7 +102,6 @@ struct ModelRecentsStore: @unchecked Sendable {
         self.limit = limit
     }
 
-    /// One server's recent models.
     init(server: URL, defaults: UserDefaults = .standard) {
         let key = defaults.scopedModelListKey(base: Self.baseKey, server: server)
         self.init(defaults: defaults, storageKey: key)
@@ -172,14 +169,57 @@ struct ModelRecentsStore: @unchecked Sendable {
     }
 }
 
+struct ModelPreset: Codable, Equatable {
+    var effort: String?
+    var fast: Bool?
+}
+
+struct ModelPresetStore: @unchecked Sendable {
+    private static let baseKey = "hermes.mobile.modelPresets"
+
+    private let defaults: UserDefaults
+    private let storageKey: String
+
+    init(server: URL, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        storageKey = defaults.scopedModelListKey(base: Self.baseKey, server: server)
+    }
+
+    static func remove(for server: URL, in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: UserDefaults.modelListKey(base: baseKey, server: server))
+    }
+
+    func preset(for key: ModelFavoriteKey) -> ModelPreset? { presets[key] }
+
+    func record(effort: String, for key: ModelFavoriteKey) {
+        var all = presets
+        all[key, default: ModelPreset()].effort = effort
+        save(all)
+    }
+
+    func record(fast: Bool, for key: ModelFavoriteKey) {
+        var all = presets
+        all[key, default: ModelPreset()].fast = fast
+        save(all)
+    }
+
+    private var presets: [ModelFavoriteKey: ModelPreset] {
+        guard let data = defaults.data(forKey: storageKey),
+              let decoded = try? JSONDecoder().decode([ModelFavoriteKey: ModelPreset].self, from: data) else { return [:] }
+        return decoded
+    }
+
+    private func save(_ presets: [ModelFavoriteKey: ModelPreset]) {
+        guard let data = try? JSONEncoder().encode(presets) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
+}
+
 private extension UserDefaults {
     static func modelListKey(base: String, server: URL) -> String {
         "\(base)|\(server.absoluteString)"
     }
 
-    /// `server`'s key for a model list. The first server read after the lists became
-    /// per-server takes the old shared list, so the other servers start empty instead of
-    /// inheriting it.
     func scopedModelListKey(base: String, server: URL) -> String {
         let key = Self.modelListKey(base: base, server: server)
         if let shared = object(forKey: base) {
